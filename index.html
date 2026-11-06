@@ -1,0 +1,3047 @@
+!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>FIFA Museum Zurich — Interactive 3D English Exhibition (Multiplayer Edition)</title>
+  <!-- Load external libraries in the HEAD before any script parsing -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --fifa-midnight: #07101f;
+      --fifa-slate: #0d1b33;
+      --fifa-gold: #d4af37;
+      --fifa-emerald: #00c853;
+      --fifa-cyan: #00e5ff;
+    }
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+      background: #07101f; color: #f8fafc; font-family: 'Inter', sans-serif;
+      touch-action: none;
+    }
+    .font-museum { font-family: 'Montserrat', sans-serif; letter-spacing: 0.03em; }
+    #game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; }
+
+    .glass-museum {
+      background: linear-gradient(145deg, rgba(11, 23, 42, 0.92), rgba(7, 15, 29, 0.96));
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(212, 175, 55, 0.38);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+    }
+    .glass-hud {
+      background: rgba(7, 17, 32, 0.86);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    }
+    .gold-border { border-color: rgba(212, 175, 55, 0.65); }
+    .btn-museum {
+      transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .btn-museum:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .btn-museum:active { transform: translateY(1px); }
+
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-track { background: rgba(15, 30, 54, 0.6); }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #d4af37; border-radius: 999px; }
+
+    @keyframes pulseBorder {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(0, 210, 255, 0.45); }
+      50% { box-shadow: 0 0 0 8px rgba(0, 210, 255, 0); }
+    }
+    .pulse-cyan { animation: pulseBorder 2s infinite; }
+
+    @media print {
+      body * { visibility: hidden; }
+      #print-diploma, #print-diploma * { visibility: visible; }
+      #print-diploma { position: fixed; inset: 0; background: #ffffff; color: #071120; padding: 32px; z-index: 99999; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 3D ZURICH MUSEUM WEBGL CANVAS -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- FLOATING ARTIFACT / DOCENT PROXIMITY PROMPT -->
+  <div id="proximity-banner" class="hidden fixed left-1/2 -translate-x-1/2 bottom-28 md:bottom-24 z-20 pointer-events-auto cursor-pointer">
+    <div id="btn-proximity-trigger" class="glass-museum gold-border px-5 py-2.5 rounded-full flex items-center gap-3 pulse-cyan">
+      <span class="bg-[#d4af37] text-[#071120] font-museum font-extrabold text-xs px-2.5 py-1 rounded-full">KEY E</span>
+      <span id="proximity-label" class="font-museum text-xs sm:text-sm font-bold text-white tracking-wide">Inspect Vitrine</span>
+    </div>
+  </div>
+
+  <!-- EDITORIAL MUSEUM NOTIFICATION TOAST -->
+  <div id="toast-stack" class="fixed top-20 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none w-11/12 max-w-md"></div>
+
+  <!-- ==================== TOP VISITOR ACCREDITATION PASS & FLOORPLAN HUD ==================== -->
+  <div id="museum-hud" class="hidden fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-3 sm:p-4">
+    <!-- Top Bar -->
+    <div class="flex flex-wrap items-center justify-between gap-2.5 pointer-events-auto">
+      <!-- Official Visitor Pass Badge -->
+      <div class="glass-hud rounded-2xl px-3.5 py-2 flex items-center gap-3 border-l-4 border-l-[#d4af37]">
+        <div id="hud-kit-dot" class="w-10 h-10 rounded-xl bg-[#00a859] border border-white/30 flex items-center justify-center font-museum font-black text-sm text-white shadow-inner">
+          #10
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] uppercase tracking-widest text-[#d4af37] font-bold">ZURICH VISITOR PASS</span>
+            <span id="hud-grade-pill" class="bg-white/10 text-cyan-300 text-[10px] font-bold px-2 py-0.5 rounded-full">GRADE 1</span>
+          </div>
+          <div class="flex items-center gap-3 mt-0.5">
+            <span id="hud-visitor-name" class="font-museum font-bold text-sm text-white">Junior Curator</span>
+            <div class="w-20 h-1.5 bg-slate-800 rounded-full overflow-hidden" title="Curator Rank Progress">
+              <div id="hud-xp-fill" class="h-full bg-gradient-to-r from-[#00d2ff] to-[#d4af37]" style="width: 15%"></div>
+            </div>
+            <span id="hud-rank-text" class="text-[11px] font-bold text-[#d4af37]">LVL 1</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Current Architectural Hall Indicator & Quick Elevator Selector -->
+      <div class="glass-hud rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+        <span class="w-2.5 h-2.5 rounded-full bg-[#00e5ff] animate-ping"></span>
+        <span class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold hidden xl:inline">Location:</span>
+        <select id="hall-selector" aria-label="Museum Hall Floorplan" class="bg-transparent font-museum text-xs font-bold text-white focus:outline-none cursor-pointer">
+          <option value="hall1" class="bg-[#07101f] text-white">01 • Main Lobby & Reception (Zurich)</option>
+          <option value="hall2" class="bg-[#07101f] text-white">02 • The Rainbow of 211 Jerseys (Verb to Be)</option>
+          <option value="hall3" class="bg-[#07101f] text-white">03 • World Cup Trophy Vault Rotunda</option>
+          <option value="hall4" class="bg-[#07101f] text-white">04 • Mixed Press Zone, Locker & Pinball Arena</option>
+          <option value="hall5" class="bg-[#07101f] text-white">05 • Panorama Cinema 180° Auditorium</option>
+        </select>
+      </div>
+
+      <!-- Live Room Code & Connected Classmates Pill -->
+      <div class="glass-hud rounded-2xl px-3 py-1.5 flex items-center gap-2 border border-emerald-400/35">
+        <span id="mp-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+        <div class="text-[11px] leading-tight">
+          <div class="font-museum font-extrabold text-emerald-300 flex items-center gap-1.5">
+            <span>🟢 Room [<span id="hud-room-code">MUSEO-1A</span>]:</span>
+            <span id="hud-online-count" class="text-white">1 Player</span>
+          </div>
+          <div id="mp-transport-label" class="text-[9px] text-slate-400">Live Sync Active</div>
+        </div>
+        <button id="btn-change-room" class="btn-museum bg-white/10 hover:bg-white/20 text-[10px] font-museum font-bold text-[#ffd700] px-2 py-1 rounded-lg" title="Switch Class Room Code">
+          Switch
+        </button>
+      </div>
+
+      <!-- Credits, Stars & Executive Navigation -->
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="glass-hud rounded-2xl px-3.5 py-2 flex items-center gap-3 text-xs font-bold">
+          <span class="text-[#ffd700]" title="Museum Credits">🪙 <span id="hud-credits">30</span></span>
+          <span class="text-cyan-300" title="Curator Stars">★ <span id="hud-stars">0</span></span>
+          <span class="text-emerald-400 hidden sm:inline" title="Exhibits Verified">🏛️ <span id="hud-progress-pct">0%</span></span>
+        </div>
+        <button id="btn-open-archive" class="btn-museum glass-hud hover:border-[#d4af37] text-[#ffd700] font-museum text-xs font-bold px-3 py-2.5 rounded-xl">
+          📖 Museumpedia
+        </button>
+        <button id="btn-open-kit" class="btn-museum glass-hud text-white font-museum text-xs font-bold px-3 py-2.5 rounded-xl">
+          👕 Locker Room
+        </button>
+        <button id="btn-open-teacher" class="btn-museum glass-hud text-emerald-300 font-museum text-xs font-bold px-3 py-2.5 rounded-xl">
+          📊 Teacher
+        </button>
+        <button id="btn-toggle-audio" class="btn-museum glass-hud text-slate-200 font-museum text-xs font-bold px-2.5 py-2.5 rounded-xl" title="Audio Guide">
+          🔊
+        </button>
+        <button id="btn-open-lobby" class="btn-museum bg-[#d4af37] text-[#07101f] font-museum text-xs font-extrabold px-3 py-2.5 rounded-xl">
+          Lobby
+        </button>
+      </div>
+    </div>
+
+    <!-- Middle Section: Left Live Architectural Radar & Right Online Classmates / Cinema Leaderboard -->
+    <div class="hidden md:flex justify-between items-start my-auto pointer-events-none gap-4">
+      <div class="glass-hud rounded-2xl p-3.5 w-64 pointer-events-auto space-y-2.5">
+        <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
+          <span class="font-museum text-[11px] font-bold uppercase tracking-wider text-[#ffd700]">Live Museum Radar</span>
+          <span id="hud-live-hall-tag" class="text-[10px] text-[#00e5ff] font-semibold">LOBBY</span>
+        </div>
+        <!-- Mini Architectural Floorplan Radar showing Local + Multiplayer Classmate Dots -->
+        <canvas id="minimap-canvas" width="220" height="118" class="w-full rounded-lg border border-white/10 bg-[#050c17]"></canvas>
+        <div class="flex items-center justify-between text-[10px] text-slate-400">
+          <span class="flex items-center gap-1"><i class="inline-block w-2 h-2 rounded-full bg-[#00e5ff]"></i> You</span>
+          <span class="flex items-center gap-1"><i class="inline-block w-2 h-2 rounded-full bg-[#00c853]"></i> Classmates</span>
+          <span class="flex items-center gap-1"><i class="inline-block w-2 h-2 rounded-full bg-[#ffd700]"></i> Vault</span>
+        </div>
+        <ul id="hud-checklist" class="space-y-1 text-[11px] text-slate-300 pt-1 border-t border-white/10"></ul>
+      </div>
+
+      <!-- Right Live Multiplayer Classmates Roster & Hall 05 Leaderboard -->
+      <div class="glass-hud rounded-2xl p-3.5 w-64 pointer-events-auto space-y-2">
+        <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
+          <span class="font-museum text-[11px] font-bold uppercase tracking-wider text-emerald-400">Classmates in Room</span>
+          <span id="hud-roster-badge" class="text-[10px] font-bold text-[#ffd700]">LIVE</span>
+        </div>
+        <div id="hud-peer-list" class="space-y-1.5 max-h-40 overflow-y-auto custom-scroll text-[11px] text-slate-200">
+          <div class="text-slate-400 text-[11px]">Share your Room Code so classmates appear here in 3D!</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Child-Safe Curated A1 English Quick-Chat Bar (Zero Free-Text Input) -->
+    <div class="pointer-events-auto flex flex-col items-center gap-2 w-full">
+      <div class="glass-hud rounded-2xl px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto max-w-full custom-scroll border border-[#00e5ff]/30">
+        <span class="text-[10px] font-museum font-extrabold uppercase tracking-wider text-[#00e5ff] shrink-0 px-1">💬 Safe Chat:</span>
+        <button data-qchat="👋 Hello! I am ready!" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">👋 Hello! I am ready!</button>
+        <button data-qchat="🌈 I am in the Rainbow Hall!" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">🌈 I am in the Rainbow Hall!</button>
+        <button data-qchat="🏆 Look! The World Cup is gold!" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">🏆 Look! The World Cup is gold!</button>
+        <button data-qchat="🐶 Pickles is a hero dog!" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">🐶 Pickles is a hero dog!</button>
+        <button data-qchat="⚽ She plays great football!" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">⚽ She plays great football!</button>
+        <button data-qchat="🎉 Goal! Do you see my crown?" class="qchat-btn btn-museum bg-white/10 hover:bg-[#00e5ff]/25 text-white text-[11px] font-semibold px-2.5 py-1 rounded-xl shrink-0">🎉 Goal! Do you see my crown?</button>
+      </div>
+
+      <!-- Bottom Controls Bar (Desktop Guide + Mobile Virtual Joystick) -->
+      <div class="flex items-end justify-between w-full pointer-events-none">
+        <!-- Mobile Thumb Joystick -->
+        <div id="joy-zone" class="relative w-28 h-28 rounded-full bg-[#07101f]/75 border-2 border-[#d4af37]/50 pointer-events-auto flex items-center justify-center md:hidden">
+          <div id="joy-knob" class="w-11 h-11 rounded-full bg-[#d4af37] shadow-lg"></div>
+        </div>
+
+        <div class="hidden md:flex items-center gap-3 glass-hud px-4 py-1.5 rounded-full pointer-events-auto text-[11px] text-slate-300 mx-auto">
+          <span><b class="text-[#ffd700]">WASD / Arrows</b> Walk Galleries</span>
+          <span>•</span>
+          <span><b class="text-[#ffd700]">Mouse Drag</b> Orbit 360°</span>
+          <span>•</span>
+          <span><b class="text-[#ffd700]">SPACE</b> Jump</span>
+          <span>•</span>
+          <span><b class="text-[#00e5ff]">E</b> Inspect & Verify</span>
+        </div>
+
+        <div class="flex items-center gap-2 pointer-events-auto md:hidden">
+          <button id="btn-mob-inspect" class="btn-museum bg-[#d4af37] text-[#07101f] font-museum font-extrabold text-xs px-4 py-3.5 rounded-2xl shadow-lg">
+            INSPECT (E)
+          </button>
+          <button id="btn-mob-jump" class="btn-museum bg-[#00c853] text-white font-museum font-extrabold text-xs px-4 py-3.5 rounded-2xl shadow-lg">
+            JUMP
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ZURICH EXHIBITION ENTRANCE, ROOM CODE & GRADE MODAL ==================== -->
+  <div id="welcome-modal" class="fixed inset-0 z-30 flex items-center justify-center p-4 bg-[#050b16]/90 backdrop-blur-md overflow-y-auto">
+    <div class="glass-museum rounded-3xl w-full max-w-4xl p-6 sm:p-8 my-auto">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-4 mb-6">
+        <div>
+          <div class="inline-flex items-center gap-2 text-[11px] font-museum font-bold uppercase tracking-widest text-[#ffd700] mb-1">
+            <span>🇨🇭 ZURICH • SEESTRASSE 27 • 3D MULTIPLAYER EDITION</span>
+          </div>
+          <h1 class="font-museum text-2xl sm:text-3xl md:text-4xl font-black text-white tracking-tight">
+            FIFA MUSEUM ZURICH <span class="text-[#ffd700]">ENGLISH EXHIBITION</span>
+          </h1>
+        </div>
+        <div class="text-right hidden sm:block">
+          <div class="text-xs font-bold text-emerald-400">ZERO-CONFIG CLASSROOM LIVE SYNC</div>
+          <div class="text-[11px] text-slate-400">Grades 1–3 • Verb to Be & Present Simple</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Left Registration Column -->
+        <div class="lg:col-span-7 space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <div>
+              <label for="visitor-name-input" class="block text-xs font-museum font-bold uppercase tracking-wider text-slate-300 mb-1.5">
+                1. Student Name / Nickname
+              </label>
+              <input id="visitor-name-input" type="text" maxlength="18" value="Junior Curator"
+                placeholder="e.g. Mateo 10"
+                class="w-full bg-[#07101f] border border-white/25 focus:border-[#ffd700] rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none" />
+            </div>
+            <div>
+              <label for="room-code-input" class="block text-xs font-museum font-bold uppercase tracking-wider text-emerald-400 mb-1.5">
+                2. Classroom Room Code (Live 3D)
+              </label>
+              <input id="room-code-input" type="text" maxlength="16" value="MUSEO-1A"
+                placeholder="e.g. MUSEO-1A or PROFE-10"
+                class="w-full bg-[#07101f] border-2 border-emerald-400/60 focus:border-[#00e5ff] rounded-xl px-4 py-3 text-[#ffd700] font-museum font-extrabold uppercase text-sm tracking-wider focus:outline-none" />
+            </div>
+          </div>
+
+          <div>
+            <span class="block text-xs font-museum font-bold uppercase tracking-wider text-slate-300 mb-2">
+              3. Select School Grade Track
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" id="grade-selector-cards">
+              <button type="button" data-grade="1" class="grade-option text-left p-3.5 rounded-2xl border-2 border-[#d4af37] bg-[#d4af37]/15 transition">
+                <div class="text-xs font-museum font-extrabold text-[#d4af37]">FIRST GRADE</div>
+                <div class="text-[11px] text-slate-300 font-semibold mb-1.5">Ages 6–7 • Foundation</div>
+                <p class="text-[11px] text-slate-400 leading-relaxed">Am / Is / Are, personal pronouns & core football action verbs.</p>
+              </button>
+              <button type="button" data-grade="2" class="grade-option text-left p-3.5 rounded-2xl border border-white/15 bg-white/5 hover:bg-white/10 transition">
+                <div class="text-xs font-museum font-extrabold text-white">SECOND GRADE</div>
+                <div class="text-[11px] text-slate-300 font-semibold mb-1.5">Ages 7–8 • Intermediate</div>
+                <p class="text-[11px] text-slate-400 leading-relaxed">Do / Does questions, 3rd person (-s/-es/-ies) & sentence order.</p>
+              </button>
+              <button type="button" data-grade="3" class="grade-option text-left p-3.5 rounded-2xl border border-white/15 bg-white/5 hover:bg-white/10 transition">
+                <div class="text-xs font-museum font-extrabold text-white">THIRD GRADE</div>
+                <div class="text-[11px] text-slate-300 font-semibold mb-1.5">Ages 8–9 • Advanced A1</div>
+                <p class="text-[11px] text-slate-400 leading-relaxed">Negatives, frequency adverbs, error correction & mixed grammar.</p>
+              </button>
+            </div>
+          </div>
+
+          <button id="btn-enter-museum" class="btn-museum w-full bg-gradient-to-r from-[#d4af37] via-[#ffd700] to-[#d4af37] text-[#07101f] font-museum font-black text-sm sm:text-base py-4 rounded-2xl shadow-xl tracking-wide">
+            JOIN 3D MULTIPLAYER MUSEUM →
+          </button>
+        </div>
+
+        <!-- Right Architectural Overview Column -->
+        <div class="lg:col-span-5 bg-[#07101f]/90 border border-white/10 rounded-2xl p-4 flex flex-col justify-between space-y-4">
+          <div>
+            <div class="text-xs font-museum font-bold uppercase tracking-wider text-[#00e5ff] mb-2.5">
+              5 Connected Indoor Halls + Live Classmates
+            </div>
+            <ul class="space-y-2 text-xs text-slate-300">
+              <li class="flex gap-2"><span class="text-[#ffd700] font-bold">01</span> <span><b>Main Lobby:</b> Glass turnstiles, curator desk & welcome plaques.</span></li>
+              <li class="flex gap-2"><span class="text-[#ffd700] font-bold">02</span> <span><b>Rainbow of 211 Jerseys:</b> Illuminated kit cylinder & Verb to Be gate.</span></li>
+              <li class="flex gap-2"><span class="text-[#ffd700] font-bold">03</span> <span><b>World Cup Vault Rotunda:</b> Original Trophy, Messi, Pelé, Pickles & Cards.</span></li>
+              <li class="flex gap-2"><span class="text-[#ffd700] font-bold">04</span> <span><b>Press, Locker & Pinball Arena:</b> Present Simple routines & 3D turf pads.</span></li>
+              <li class="flex gap-2"><span class="text-[#ffd700] font-bold">05</span> <span><b>Cinema 180° Auditorium:</b> Live room leaderboard & VAR Glitch Final!</span></li>
+            </ul>
+          </div>
+
+          <div class="bg-emerald-950/40 border border-emerald-400/30 rounded-xl p-2.5 text-[11px] text-emerald-200 leading-relaxed">
+            🟢 <b>Zero-Config Multiplayer:</b> Students entering the same <b>Room Code</b> walk together in 3D, use safe A1 English speech bubbles, and stream live scores to the <b>Teacher Dashboard</b>!
+          </div>
+
+          <div class="grid grid-cols-2 gap-2 pt-2 border-t border-white/10">
+            <button id="welcome-btn-archive" class="btn-museum bg-white/10 hover:bg-white/15 text-xs font-semibold py-2.5 px-3 rounded-xl text-[#ffd700]">
+              📖 Museumpedia
+            </button>
+            <button id="welcome-btn-teacher" class="btn-museum bg-white/10 hover:bg-white/15 text-xs font-semibold py-2.5 px-3 rounded-xl text-emerald-300">
+              📊 Teacher Live
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ARTIFACT VITRINE PLAQUE & INTEGRATED GRAMMAR MODAL ==================== -->
+  <div id="exhibit-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 bg-black/70 backdrop-blur-sm">
+    <div class="glass-museum rounded-3xl w-full max-w-2xl p-5 sm:p-6 max-h-[92vh] overflow-y-auto custom-scroll">
+      <!-- Top Museum Plaque Header -->
+      <div class="flex items-start justify-between gap-3 border-b border-white/15 pb-3.5 mb-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span id="ex-badge" class="bg-[#d4af37]/20 text-[#d4af37] border border-[#d4af37]/50 text-[10px] font-museum font-bold uppercase px-2.5 py-0.5 rounded-full">
+              HALL 03 • ARTIFACT VITRINE
+            </span>
+            <span id="ex-grammar-tag" class="bg-cyan-500/20 text-cyan-300 text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-full">
+              Verb to Be
+            </span>
+          </div>
+          <h2 id="ex-title" class="font-museum text-lg sm:text-2xl font-extrabold text-white mt-1">The FIFA World Cup Trophy</h2>
+        </div>
+        <button id="btn-close-exhibit" class="btn-museum bg-white/10 hover:bg-rose-500/30 text-white px-3 py-1.5 rounded-xl text-xs font-bold">✕ ESC</button>
+      </div>
+
+      <!-- Historical Context & Audio Guide Section -->
+      <div id="ex-lore-section" class="bg-[#071120]/90 border border-white/10 rounded-2xl p-4 mb-4 space-y-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[11px] font-museum font-bold uppercase tracking-wider text-slate-400">Curatorial Historical Note (ES)</span>
+          <button id="btn-listen-guide" class="btn-museum bg-[#d4af37] text-[#071120] font-museum font-extrabold text-[11px] px-3 py-1 rounded-full flex items-center gap-1.5">
+            🔊 Audio Guide (EN)
+          </button>
+        </div>
+        <p id="ex-history-es" class="text-xs sm:text-sm text-slate-200 leading-relaxed"></p>
+        <div class="bg-emerald-950/50 border-l-4 border-[#00a859] px-3.5 py-2 rounded-r-xl">
+          <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">English Model Sentence (A1)</div>
+          <p id="ex-model-en" class="text-xs sm:text-sm font-semibold text-white mt-0.5"></p>
+        </div>
+      </div>
+
+      <!-- Cinema 180 Shootout Shield Progress (Visible on Boss / Final Restoration) -->
+      <div id="ex-shootout-bar-wrap" class="hidden mb-4 bg-rose-950/40 border border-rose-500/40 rounded-2xl p-3">
+        <div class="flex justify-between text-xs font-bold mb-1.5">
+          <span class="text-rose-300">⚡ VAR GLITCH FINAL RESTORATION</span>
+          <span id="ex-shootout-step" class="text-[#ffd700]">Stage 1 of 4</span>
+        </div>
+        <div class="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden">
+          <div id="ex-shootout-fill" class="h-full bg-gradient-to-r from-[#00c853] to-[#ffd700] transition-all duration-300" style="width: 25%"></div>
+        </div>
+      </div>
+
+      <!-- Interactive Grammar Verification Task -->
+      <div class="bg-white/5 border border-white/15 rounded-2xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[11px] font-museum font-bold uppercase tracking-wider text-[#00d2ff]">Interactive Grammar Verification</span>
+          <button id="btn-speak-question" class="text-xs text-cyan-300 hover:underline font-semibold">🔊 Read Prompt</button>
+        </div>
+        <p id="ex-question-prompt" class="font-museum text-base sm:text-lg font-bold text-white mb-3.5"></p>
+
+        <!-- Multiple Choice Container -->
+        <div id="ex-mc-grid" class="grid grid-cols-1 sm:grid-cols-3 gap-2.5"></div>
+
+        <!-- Word-Order Tactical Builder Container -->
+        <div id="ex-builder-wrap" class="hidden space-y-3">
+          <div id="ex-builder-tray" class="min-h-[46px] bg-[#071120] border border-dashed border-[#d4af37]/70 rounded-xl p-2.5 flex flex-wrap gap-2 items-center"></div>
+          <div id="ex-builder-bank" class="flex flex-wrap gap-2"></div>
+          <div class="flex gap-2 pt-1">
+            <button id="btn-builder-verify" class="btn-museum bg-[#00a859] text-white font-museum font-bold text-xs px-4 py-2.5 rounded-xl">Verify Sentence</button>
+            <button id="btn-builder-reset" class="btn-museum bg-white/10 text-slate-200 font-bold text-xs px-3.5 py-2.5 rounded-xl">Clear</button>
+          </div>
+        </div>
+
+        <!-- Diagnostic Feedback Box -->
+        <div id="ex-feedback-box" class="hidden mt-3.5 p-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3">
+          <span id="ex-feedback-text"></span>
+          <button id="btn-ex-continue" class="btn-museum bg-[#d4af37] text-[#071120] font-museum font-extrabold text-xs px-3.5 py-2 rounded-lg shrink-0">Continue →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== FIFA MUSEUM COLLECTION ARCHIVE (ENCYCLOPEDIA DRAWER) ==================== -->
+  <div id="archive-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+    <div class="glass-museum rounded-3xl w-full max-w-5xl p-5 sm:p-7 max-h-[90vh] overflow-y-auto custom-scroll">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/15 pb-4 mb-4">
+        <div>
+          <span class="text-[11px] font-museum font-bold uppercase tracking-widest text-[#d4af37]">ZURICH PERMANENT DIGITAL ARCHIVE • +5 CREDITS PER AUDIO CARD</span>
+          <h2 class="font-museum text-xl sm:text-2xl font-extrabold text-white mt-0.5">FIFA Museum Historical Collection</h2>
+        </div>
+        <button data-close-modal="archive-modal" class="btn-museum bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-4 py-2 rounded-xl">✕ Close</button>
+      </div>
+
+      <div class="flex flex-wrap gap-2 mb-5" id="archive-tabs">
+        <button data-cat="legends" class="arch-tab bg-[#d4af37] text-[#071120] font-museum font-bold text-xs px-4 py-2 rounded-full">🌟 Greatest Legends</button>
+        <button data-cat="teams" class="arch-tab bg-white/10 text-white font-museum font-bold text-xs px-4 py-2 rounded-full">🛡️ Historic Nations & Clubs</button>
+        <button data-cat="artifacts" class="arch-tab bg-white/10 text-white font-museum font-bold text-xs px-4 py-2 rounded-full">🏛️ Curiosities & Artifacts</button>
+        <button data-cat="rules" class="arch-tab bg-white/10 text-white font-museum font-bold text-xs px-4 py-2 rounded-full">📐 Laws & World Cup Records</button>
+      </div>
+
+      <div id="archive-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+    </div>
+  </div>
+
+  <!-- ==================== VISITOR KIT & ACCREDITATION PASS CUSTOMIZER ==================== -->
+  <div id="kit-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+    <div class="glass-museum rounded-3xl w-full max-w-xl p-6 space-y-5">
+      <div class="flex items-center justify-between border-b border-white/15 pb-3">
+        <div>
+          <span class="text-[10px] font-museum font-bold uppercase tracking-widest text-[#d4af37]">OFFICIAL EXHIBITION APPAREL</span>
+          <h2 class="font-museum text-xl font-extrabold text-white">Visitor Jersey & Curator Gear</h2>
+        </div>
+        <button data-close-modal="kit-modal" class="btn-museum bg-white/10 text-white text-xs font-bold px-3.5 py-2 rounded-xl">✕ Close</button>
+      </div>
+
+      <div>
+        <div class="text-xs font-museum font-bold text-slate-300 mb-2">National Jersey Palette (#10):</div>
+        <div id="kit-swatches" class="flex flex-wrap gap-2.5"></div>
+      </div>
+
+      <div>
+        <div class="text-xs font-museum font-bold text-slate-300 mb-2">Visitor Skin Tone:</div>
+        <div id="skin-swatches" class="flex flex-wrap gap-2.5"></div>
+      </div>
+
+      <div>
+        <div class="flex justify-between text-xs font-museum font-bold text-slate-300 mb-2">
+          <span>Curator Headgear & Museum Badges:</span>
+          <span class="text-[#d4af37]">Balance: 🪙 <span id="kit-credits-label">30</span></span>
+        </div>
+        <div id="headgear-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2.5"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== TEACHER PASSWORD ACCESS GATE MODAL ==================== -->
+  <div id="teacher-auth-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+    <div class="glass-museum rounded-3xl w-full max-w-md p-6 space-y-4 border border-[#d4af37]/60">
+      <div class="flex items-start justify-between gap-3 border-b border-white/15 pb-3">
+        <div>
+          <span class="text-[10px] font-museum font-bold uppercase tracking-widest text-emerald-400">RESTRICTED STAFF ACCESS</span>
+          <h2 class="font-museum text-xl font-extrabold text-white mt-0.5">🔒 Teacher Portal Login</h2>
+        </div>
+        <button id="btn-close-teacher-auth" class="btn-museum bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-3 py-1.5 rounded-xl">✕</button>
+      </div>
+
+      <p class="text-xs text-slate-300 leading-relaxed">
+        Ingresa la contraseña docente para consultar calificaciones en vivo, diagnósticos gramaticales y reportes CSV.
+      </p>
+
+      <div class="space-y-2">
+        <label for="teacher-pass-input" class="block text-[11px] font-museum font-bold uppercase tracking-wider text-[#ffd700]">
+          Contraseña del Profesor
+        </label>
+        <div class="relative flex items-center">
+          <input id="teacher-pass-input" type="password" autocomplete="off" placeholder="Ingresa la clave docente..."
+            class="w-full bg-[#07101f] border border-white/25 focus:border-[#ffd700] rounded-xl pl-4 pr-12 py-3 text-white font-semibold text-sm focus:outline-none" />
+          <button type="button" id="btn-toggle-pass-vis" class="absolute right-2.5 text-slate-300 hover:text-white text-xs font-bold px-2 py-1 rounded-lg bg-white/5" title="Mostrar / Ocultar">
+            👁️
+          </button>
+        </div>
+        <div id="teacher-auth-error" class="hidden bg-rose-950/80 border border-rose-500/50 text-rose-200 text-xs font-semibold px-3 py-2 rounded-xl">
+          Contraseña incorrecta. Verifica mayúsculas e inténtalo de nuevo.
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2.5 pt-2">
+        <button type="button" id="btn-cancel-teacher-auth" class="btn-museum bg-white/10 text-slate-200 font-museum font-bold text-xs px-4 py-2.5 rounded-xl">
+          Cancelar
+        </button>
+        <button type="button" id="btn-submit-teacher-auth" class="btn-museum bg-gradient-to-r from-[#d4af37] to-[#ffd700] text-[#07101f] font-museum font-extrabold text-xs px-5 py-2.5 rounded-xl shadow-lg">
+          Desbloquear Panel →
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== TEACHER ANALYTICS PORTAL (0–100 & 1.0–7.0 SCALE) ==================== -->
+  <div id="teacher-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div class="glass-museum rounded-3xl w-full max-w-5xl p-6 max-h-[90vh] overflow-y-auto custom-scroll">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/15 pb-4 mb-4">
+        <div>
+          <span class="text-[10px] font-museum font-bold uppercase tracking-widest text-emerald-400">ACADEMIC ASSESSMENT & DIAGNOSTICS</span>
+          <h2 class="font-museum text-xl sm:text-2xl font-extrabold text-white">Teacher Analytics Dashboard</h2>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="btn-open-pass-settings" class="btn-museum bg-amber-500/20 border border-amber-400/40 text-[#ffd700] font-museum font-bold text-xs px-3.5 py-2 rounded-xl">🔑 Cambiar Clave</button>
+          <button id="btn-export-csv" class="btn-museum bg-[#00a859] text-white font-museum font-bold text-xs px-4 py-2 rounded-xl">📥 Export CSV (Excel)</button>
+          <button id="btn-clear-storage" class="btn-museum bg-rose-600/80 text-white font-museum font-bold text-xs px-3.5 py-2 rounded-xl">🗑️ Reset Roster</button>
+          <button id="btn-lock-teacher" class="btn-museum bg-slate-700 hover:bg-slate-600 text-white font-museum font-bold text-xs px-3.5 py-2 rounded-xl" title="Bloquear sesión docente">🔒 Bloquear</button>
+          <button data-close-modal="teacher-modal" class="btn-museum bg-white/10 text-white font-bold text-xs px-3.5 py-2 rounded-xl">✕ Close</button>
+        </div>
+      </div>
+
+      <!-- Inline Password Customization Drawer (Stores Digest Only) -->
+      <div id="teacher-pass-drawer" class="hidden mb-4 bg-[#07101f]/95 border border-[#d4af37]/45 rounded-2xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-museum font-bold text-[#ffd700]">🔑 Configurar Nueva Contraseña Docente (este navegador)</span>
+          <button type="button" id="btn-close-pass-drawer" class="text-xs text-slate-400 hover:text-white font-bold">✕ Cerrar</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2.5">
+          <input id="teacher-new-pass-input" type="password" maxlength="24" placeholder="Nueva contraseña (mín. 4 caracteres)"
+            class="flex-1 min-w-[200px] bg-[#0b172d] border border-white/20 focus:border-[#ffd700] rounded-xl px-3.5 py-2 text-xs text-white font-semibold focus:outline-none" />
+          <button type="button" id="btn-save-new-pass" class="btn-museum bg-[#00a859] text-white font-museum font-bold text-xs px-4 py-2 rounded-xl">
+            Guardar Nueva Clave
+          </button>
+          <button type="button" id="btn-reset-default-pass" class="btn-museum bg-white/10 text-slate-300 font-bold text-xs px-3 py-2 rounded-xl">
+            Restaurar Predeterminada
+          </button>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div class="flex items-center gap-2 text-xs">
+          <span class="text-slate-400 font-semibold">Filter Grade:</span>
+          <select id="teacher-filter-grade" class="bg-[#07101f] border border-white/20 rounded-lg px-3 py-1.5 text-white font-semibold">
+            <option value="all">All Grades</option>
+            <option value="1">First Grade</option>
+            <option value="2">Second Grade</option>
+            <option value="3">Third Grade</option>
+          </select>
+        </div>
+        <p id="teacher-sync-status" class="text-[11px] text-emerald-400 font-semibold">🟢 Live Classroom Sync Active — Receiving scores from Room [MUSEO-1A]</p>
+      </div>
+
+      <div class="overflow-x-auto rounded-xl border border-white/10">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-white/5 text-[#d4af37] font-museum uppercase text-[11px]">
+            <tr>
+              <th class="p-3">Student</th>
+              <th class="p-3">Grade</th>
+              <th class="p-3">Verb to Be</th>
+              <th class="p-3">Present Simple</th>
+              <th class="p-3">Exhibits</th>
+              <th class="p-3">Active Time</th>
+              <th class="p-3">Score (0–100)</th>
+              <th class="p-3">Grade (1.0–7.0)</th>
+            </tr>
+          </thead>
+          <tbody id="teacher-table-body" class="divide-y divide-white/10 text-slate-200"></tbody>
+        </table>
+      </div>
+
+      <div id="teacher-missed-box" class="mt-4 bg-[#071120] border border-white/10 rounded-xl p-3.5 text-xs text-slate-300"></div>
+    </div>
+  </div>
+
+  <!-- ==================== JUNIOR CURATOR OFFICIAL DIPLOMA MODAL ==================== -->
+  <div id="diploma-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div id="print-diploma" class="bg-gradient-to-b from-[#0b192e] to-[#06101e] border-4 border-[#d4af37] rounded-3xl max-w-xl w-full p-8 text-center shadow-2xl space-y-4">
+      <div class="text-xs font-museum font-bold uppercase tracking-[0.25em] text-[#d4af37]">ZURICH • WORLD FOOTBALL EXHIBITION</div>
+      <div class="text-4xl">🏆🏛️⚽</div>
+      <h2 class="font-museum text-2xl sm:text-3xl font-black text-white">JUNIOR CURATOR DIPLOMA</h2>
+      <p class="text-xs sm:text-sm text-slate-300">This official accreditation certifies that</p>
+      <div id="dip-name" class="font-museum text-2xl sm:text-3xl font-black text-[#d4af37] py-1 border-y border-white/15">JUNIOR CURATOR</div>
+      <p id="dip-summary" class="text-xs sm:text-sm text-slate-200 leading-relaxed"></p>
+      <div class="flex justify-center gap-3 pt-3">
+        <button onclick="window.print()" class="btn-museum bg-[#d4af37] text-[#071120] font-museum font-extrabold text-xs px-5 py-3 rounded-xl">🖨️ Print / Save PDF</button>
+        <button data-close-modal="diploma-modal" class="btn-museum bg-[#00a859] text-white font-museum font-extrabold text-xs px-5 py-3 rounded-xl">Continue Museum Tour</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * ============================================================================
+     * FIFA MUSEUM ZURICH — INTERACTIVE 3D ARCHITECTURAL ENGLISH EXHIBITION
+     * Zero-Config Classroom Multiplayer Edition (MQTT over WSS + BroadcastChannel)
+     * ============================================================================
+     */
+
+    // ============================================================================
+    // 0. PASSWORD DIGEST HELPER
+    // ============================================================================
+    function computeAccessDigest(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) - h) + str.charCodeAt(i);
+        h |= 0;
+      }
+      return String(Math.abs(h));
+    }
+
+    function getActiveTeacherDigest() {
+      try {
+        const custom = localStorage.getItem(TEACHER_HASH_KEY);
+        if (custom) return custom;
+      } catch (e) {}
+      return computeAccessDigest('PROFE2026');
+    }
+
+    // ============================================================================
+    // 1. DATA DICTIONARIES (QUESTIONS, LORE, PINBALL)
+    // ============================================================================
+    const ARCHIVE_DATA = {
+      legends: [
+        { id: 'messi', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Lionel Messi — 8 Ballon d’Ors', es: 'Campeón del Mundo en Catar 2022 y máximo ganador histórico del Balón de Oro (8 trofeos).', en: 'Lionel Messi is from Argentina. He wins many trophies and plays great football!' },
+        { id: 'pele', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Pelé — The King of 3 World Cups', es: 'El único jugador en toda la historia en conquistar 3 Copas del Mundo como futbolista (1958, 1962 y 1970).', en: 'Pelé is a Brazilian legend. He is the champion of three World Cups!' },
+        { id: 'maradona', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Diego Maradona — Mexico 1986', es: 'Protagonizó en México 1986 una de las exhibiciones individuales más memorables de los Mundiales.', en: 'Maradona is famous for his amazing dribble in 1986. Fans love his passion!' },
+        { id: 'cristiano', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Cristiano Ronaldo — Top Scorer', es: 'Máximo goleador histórico del fútbol profesional superando los 985 goles oficiales.', en: 'Cristiano Ronaldo trains every day. He jumps very high and scores many goals!' },
+        { id: 'marta', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Marta — Queen of Football', es: 'Máxima goleadora histórica en Copas Mundiales de la FIFA con 17 goles.', en: 'Marta is an inspiration. She scores historic goals for Brazil in the World Cup!' },
+        { id: 'cruyff', hall: 'HALL 04 • TACTICAL LAB', title: 'Johan Cruyff & Total Football', es: 'Ganador de 3 Balones de Oro y estandarte del Fútbol Total neerlandés.', en: 'Johan Cruyff is a smart tactician. His team passes the ball across the pitch!' }
+      ],
+      teams: [
+        { id: 'brazil5', hall: 'HALL 02 • RAINBOW OF JERSEYS', title: 'Brazil — 5-Time World Champion', es: 'Única selección que ha estado en todos los Mundiales y suma 5 estrellas (1958, 1962, 1970, 1994, 2002).', en: 'Brazil wears a yellow jersey. They are five-time World Cup champions!' },
+        { id: 'colombia', hall: 'HALL 02 • RAINBOW OF JERSEYS', title: 'Colombia Pride & South America', es: 'Cuna de talento y alegría en la Copa América y Copas del Mundo.', en: 'Colombia players dance when they score! Fans wear yellow shirts with pride.' },
+        { id: 'spain2026', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Spain & Argentina — World Champions', es: 'Argentina conquistó su 3.ª estrella en 2022 y España alzó su 2.ª Copa del Mundo en la final de 2026.', en: 'National teams compete every four years. Spain and Argentina play great football!' },
+        { id: 'uswnt', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'USWNT — 4 Stars & Gold Medals', es: 'La selección femenina más laureada en la historia de los Mundiales Femeninos de la FIFA.', en: 'They are four-time World Champions. They work together as a strong team!' }
+      ],
+      artifacts: [
+        { id: 'pickles1966', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Pickles the Dog Saved the 1966 World Cup', es: 'En 1966 robaron el trofeo en Londres y un perrito collie llamado Pickles lo encontró bajo un arbusto.', en: 'Pickles is a hero dog! He finds the golden World Cup trophy in London.' },
+        { id: 'cards1970', hall: 'HALL 03 • TROPHY ROTUNDA', title: 'Yellow & Red Cards from a Traffic Light', es: 'El árbitro Ken Aston inventó las tarjetas detenido ante un semáforo en Londres antes de México 1970.', en: 'The yellow card means caution, and the red card means stop!' },
+        { id: 'uruguay1930_ball', hall: 'HALL 01 • MAIN LOBBY', title: 'Uruguay 1930 Centenary Matchball', es: 'Usado en la primera final del mundo de la historia entre Uruguay y Argentina.', en: 'The first World Cup in 1930 used this leather matchball!' }
+      ],
+      rules: [
+        { id: 'eleven', hall: 'HALL 04 • MEDIA MIXED ZONE', title: '11 vs 11 & 90 Minutes', es: 'Cada equipo juega con 11 jugadores en cancha en dos tiempos de 45 minutos.', en: 'Eleven players are on each team. The goalkeeper catches the ball with two hands!' },
+        { id: 'zurich', hall: 'HALL 01 • MAIN LOBBY', title: 'The FIFA Museum in Zurich', es: 'Conserva más de 1,000 objetos históricos y los trofeos originales de los Mundiales.', en: 'The FIFA Museum is in Switzerland. Visitors see historic boots, balls, and trophies!' }
+      ]
+    };
+
+    function findLoreById(loreId) {
+      for (const cat of Object.keys(ARCHIVE_DATA)) {
+        const found = ARCHIVE_DATA[cat].find(i => i.id === loreId);
+        if (found) return found;
+      }
+      return { id: loreId, title: 'FIFA Museum Artifact', es: 'Objeto histórico oficial del museo.', en: 'Official historical museum exhibit.' };
+    }
+
+    const QUESTIONS = [
+      // Grade 1
+      { id: 'g1_1', g: 1, topic: 'vtb', type: 'mc', q: 'I ___ a football striker!', opts: ['am', 'is', 'are'], a: 'am', exp: 'With "I", we always use "am": I am a striker!' },
+      { id: 'g1_2', g: 1, topic: 'vtb', type: 'mc', q: 'Lionel Messi ___ a great player.', opts: ['am', 'is', 'are'], a: 'is', exp: 'Lionel Messi is one person (He), so we use "is"!' },
+      { id: 'g1_3', g: 1, topic: 'vtb', type: 'mc', q: 'The footballs ___ black and white.', opts: ['am', 'is', 'are'], a: 'are', exp: '"Footballs" is plural (They), so we use "are"!' },
+      { id: 'g1_4', g: 1, topic: 'vtb', type: 'mc', q: 'Pickles ___ a hero dog from 1966!', opts: ['is', 'am', 'are'], a: 'is', exp: 'Pickles is one dog, so we say "Pickles is"!' },
+      { id: 'g1_5', g: 1, topic: 'vtb', type: 'builder', q: 'Build the sentence:', words: ['I', 'am', 'a', 'champion'], a: 'I am a champion', exp: 'Awesome! "I am a champion"!' },
+      { id: 'g1_6', g: 1, topic: 'ps', type: 'mc', q: 'I ___ football with my friends.', opts: ['play', 'plays', 'playing'], a: 'play', exp: 'With "I", use the base verb: I play football!' },
+      { id: 'g1_7', g: 1, topic: 'ps', type: 'mc', q: 'He ___ the ball into the goal!', opts: ['kicks', 'kick', 'kicking'], a: 'kicks', exp: 'With "He", we add -s: He kicks the ball!' },
+      { id: 'g1_8', g: 1, topic: 'ps', type: 'builder', q: 'Build the action:', words: ['We', 'play', 'soccer'], a: 'We play soccer', exp: 'Great job! "We play soccer"!' },
+
+      // Grade 2
+      { id: 'g2_1', g: 2, topic: 'vtb', type: 'mc', q: 'Pelé and Marta ___ legends from Brazil.', opts: ['are', 'is', 'am'], a: 'are', exp: 'Two players = "They", so we use "are"!' },
+      { id: 'g2_2', g: 2, topic: 'vtb', type: 'mc', q: '___ the referee ready with the whistle?', opts: ['Is', 'Are', 'Am'], a: 'Is', exp: 'For one referee, start the question with "Is"!' },
+      { id: 'g2_3', g: 2, topic: 'ps', type: 'mc', q: 'Cristiano Ronaldo ___ every morning at the stadium.', opts: ['trains', 'train', 'training'], a: 'trains', exp: '3rd person singular (He) adds -s: trains!' },
+      { id: 'g2_4', g: 2, topic: 'ps', type: 'mc', q: '___ you wear shin guards in the match?', opts: ['Do', 'Does', 'Is'], a: 'Do', exp: 'Questions with "you" in Present Simple use "Do"!' },
+      { id: 'g2_5', g: 2, topic: 'ps', type: 'builder', q: 'Order this routine:', words: ['He', 'scores', 'goals', 'every', 'Sunday'], a: 'He scores goals every Sunday', exp: 'Goal! "He scores goals every Sunday"!' },
+
+      // Grade 3
+      { id: 'g3_1', g: 3, topic: 'vtb', type: 'mc', q: 'Sheffield FC ___ the oldest club, and its players ___ proud.', opts: ['is / are', 'are / is', 'is / is'], a: 'is / are', exp: 'Sheffield FC (singular) = is; its players (plural) = are!' },
+      { id: 'g3_2', g: 3, topic: 'vtb', type: 'mc', q: 'Why ___ the stadiums full during the World Cup?', opts: ['are', 'is', 'does'], a: 'are', exp: '"Stadiums" is plural, so we ask "Why are the stadiums full?"' },
+      { id: 'g3_3', g: 3, topic: 'ps', type: 'mc', q: 'A midfielder usually ___ the ball and ___ his teammates.', opts: ['passes / helps', 'pass / help', 'passes / help'], a: 'passes / helps', exp: 'For a midfielder (he/she), pass -> passes and help -> helps!' },
+      { id: 'g3_4', g: 3, topic: 'ps', type: 'mc', q: '___ Brazil have five World Cup stars on its jersey?', opts: ['Does', 'Do', 'Is'], a: 'Does', exp: 'Brazil is one national team (It), so we ask "Does Brazil have..."!' }
+    ];
+
+    const PINBALL_TARGETS = {
+      1: [
+        { banner: 'Step 1: "I ___ a striker"', opts: ['am', 'is', 'are'], ok: 0 },
+        { banner: 'Step 2: "Messi ___ fast"', opts: ['are', 'is', 'am'], ok: 1 },
+        { banner: 'Step 3: "They ___ goals"', opts: ['scores', 'scoring', 'score'], ok: 2 }
+      ],
+      2: [
+        { banner: 'Step 1: "She ___ every day"', opts: ['trains', 'train', 'training'], ok: 0 },
+        { banner: 'Step 2: "___ you play soccer?"', opts: ['Are', 'Do', 'Does'], ok: 1 },
+        { banner: 'Step 3: "We ___ champions!"', opts: ['is', 'am', 'are'], ok: 2 }
+      ],
+      3: [
+        { banner: 'Step 1: "He ___ the match"', opts: ['watches', 'watchs', 'watch'], ok: 0 },
+        { banner: 'Step 2: "She ___ miss penalties"', opts: ['don’t', 'doesn’t', 'isn’t'], ok: 1 },
+        { banner: 'Step 3: "___ Brazil have 5 Cups?"', opts: ['Do', 'Is', 'Does'], ok: 2 }
+      ]
+    };
+
+    // ============================================================================
+    // 2. PERSISTENT STATE & ACADEMIC ANALYTICS (0–100 & 1.0–7.0 SCALE)
+    // ============================================================================
+    const SAVE_KEY = 'fifa_museum_zurich_3d_mp_v4';
+    const TEACHER_HASH_KEY = 'fifa_museum_teacher_digest_v1';
+    const DEFAULT_TEACHER_DIGEST = '9:660418';
+    let teacherSessionUnlocked = false;
+    const CLIENT_ID = 'vis_' + Math.random().toString(36).slice(2, 10);
+
+    const DEFAULT_STATE = () => ({
+      visitorName: 'Junior Curator',
+      roomCode: 'MUSEO-1A',
+      grade: 1,
+      credits: 35,
+      stars: 0,
+      xp: 0,
+      level: 1,
+      audioOn: true,
+      kitHex: '#00c853',
+      shortsHex: '#0b1528',
+      skinHex: '#f1c27d',
+      hatId: 'lanyard',
+      ownedHats: ['lanyard'],
+      readArchiveIds: [],
+      verifiedExhibits: [],
+      unlockedGates: { rainbowGate: false },
+      missions: {
+        atriumCheckIn: false,
+        rainbowGateOpen: false,
+        rotundaLegends: false,
+        mediaMixedZone: false,
+        pinballCourse: false,
+        cinema180Final: false
+      },
+      stats: {
+        vtbCorrect: 0, vtbTotal: 0,
+        psCorrect: 0, psTotal: 0,
+        seconds: 0,
+        missedPrompts: []
+      },
+      roster: []
+    });
+
+    let appState = DEFAULT_STATE();
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(SAVE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          appState = Object.assign({}, DEFAULT_STATE(), parsed);
+          appState.missions = Object.assign({}, DEFAULT_STATE().missions, parsed.missions || {});
+          appState.stats = Object.assign({}, DEFAULT_STATE().stats, parsed.stats || {});
+          appState.roster = parsed.roster || [];
+        }
+      } catch (e) {}
+    }
+
+    loadState();
+
+    function sanitizeRoomCode(code) {
+      return String(code || 'MUSEO-1A').trim().toUpperCase().replace(/[^A-Z0-9\-_]/g, '') || 'MUSEO-1A';
+    }
+
+    function buildLocalAcademicRecord() {
+      const exhibitsDone = Object.values(appState.missions).filter(Boolean).length;
+      return {
+        name: appState.visitorName,
+        roomCode: appState.roomCode,
+        grade: appState.grade,
+        vtbCorrect: appState.stats.vtbCorrect,
+        vtbTotal: appState.stats.vtbTotal,
+        psCorrect: appState.stats.psCorrect,
+        psTotal: appState.stats.psTotal,
+        exhibitsDone,
+        seconds: appState.stats.seconds
+      };
+    }
+
+    function upsertRosterRecord(rec) {
+      const idx = appState.roster.findIndex(r => r.name.toLowerCase() === rec.name.toLowerCase() && r.grade === rec.grade);
+      if (idx >= 0) appState.roster[idx] = rec;
+      else appState.roster.push(rec);
+      saveState();
+    }
+
+    function saveState() {
+      try {
+        upsertRosterRecord(buildLocalAcademicRecord());
+        localStorage.setItem(SAVE_KEY, JSON.stringify(appState));
+      } catch (e) {}
+    }
+
+    // ============================================================================
+    // 3. AUDIO SYNTHESIS & SFX
+    // ============================================================================
+    let audioCtx = null;
+    function initAudio() {
+      if (!audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) audioCtx = new AC();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    function playChime(type) {
+      if (!appState.audioOn) return;
+      initAudio();
+      if (!audioCtx) return;
+      const t = audioCtx.currentTime;
+
+      if (type === 'credit') {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(880, t);
+        o.frequency.setValueAtTime(1320, t + 0.08);
+        g.gain.setValueAtTime(0.12, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t); o.stop(t + 0.28);
+      } else if (type === 'verify') {
+        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+          const o = audioCtx.createOscillator();
+          const g = audioCtx.createGain();
+          o.type = 'triangle';
+          o.frequency.setValueAtTime(freq, t + i * 0.07);
+          g.gain.setValueAtTime(0.14, t + i * 0.07);
+          g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.07 + 0.25);
+          o.connect(g); g.connect(audioCtx.destination);
+          o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.25);
+        });
+      } else if (type === 'gate') {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'square';
+        o.frequency.setValueAtTime(2200, t);
+        o.frequency.linearRampToValueAtTime(2600, t + 0.15);
+        g.gain.setValueAtTime(0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t); o.stop(t + 0.26);
+      } else if (type === 'retry') {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sawtooth';
+        o.frequency.setValueAtTime(180, t);
+        o.frequency.linearRampToValueAtTime(120, t + 0.22);
+        g.gain.setValueAtTime(0.1, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t); o.stop(t + 0.25);
+      }
+    }
+
+    function speakGuide(text) {
+      if (!appState.audioOn || !('speechSynthesis' in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text.replace(/___/g, 'blank'));
+        u.lang = 'en-US';
+        u.rate = 0.94;
+        u.pitch = 1.02;
+        window.speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+
+    function notifyMuseum(msg, accent = 'gold') {
+      const stack = document.getElementById('toast-stack');
+      const div = document.createElement('div');
+      const border = accent === 'emerald' ? 'border-[#00a859] text-emerald-200' : 'border-[#d4af37] text-[#d4af37]';
+      div.className = `glass-museum ${border} border px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-museum font-bold shadow-2xl text-center`;
+      div.textContent = msg;
+      stack.appendChild(div);
+      setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity 0.3s'; setTimeout(() => div.remove(), 320); }, 2900);
+    }
+
+    // ============================================================================
+    // 5. PROCEDURAL HIGH-RES MUSEUM CANVAS TEXTURES (WALL PANELS, PLAQUES, FLOOR)
+    // ============================================================================
+    function makeSlateFloorTexture() {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 512;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#121926';
+      ctx.fillRect(0, 0, 512, 512);
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 4;
+      for (let i = 0; i <= 512; i += 128) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+      }
+      // Subtle diagonal architectural sheen
+      const grad = ctx.createLinearGradient(0, 0, 512, 512);
+      grad.addColorStop(0, 'rgba(255,255,255,0.03)');
+      grad.addColorStop(0.5, 'rgba(0,0,0,0)');
+      grad.addColorStop(1, 'rgba(212,175,55,0.03)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 512, 512);
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(28, 36);
+      return tex;
+    }
+
+    function makeArchitecturalWallPanel(tag, headline, subline, accentHex = '#d4af37', darkBg = '#091426') {
+      const c = document.createElement('canvas');
+      c.width = 1024; c.height = 512;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = darkBg;
+      ctx.fillRect(0, 0, 1024, 512);
+
+      // Architectural border & gold museum stripe
+      ctx.strokeStyle = accentHex;
+      ctx.lineWidth = 10;
+      ctx.strokeRect(24, 24, 976, 464);
+
+      ctx.fillStyle = accentHex;
+      ctx.fillRect(64, 78, 12, 92);
+
+      ctx.fillStyle = accentHex;
+      ctx.font = '700 28px Montserrat, sans-serif';
+      ctx.fillText(tag.toUpperCase(), 96, 106);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 54px Montserrat, sans-serif';
+      ctx.fillText(headline, 96, 166, 860);
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '600 30px Inter, sans-serif';
+      const words = subline.split(' ');
+      let line = '', y = 248;
+      words.forEach(w => {
+        const test = line + w + ' ';
+        if (ctx.measureText(test).width > 850) {
+          ctx.fillText(line, 96, y);
+          line = w + ' ';
+          y += 44;
+        } else line = test;
+      });
+      ctx.fillText(line, 96, y);
+
+      // Subtle FIFA Museum geometric globe rings on right
+      ctx.strokeStyle = 'rgba(212,175,55,0.16)';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(880, 360, 95, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(880, 360, 62, 0, Math.PI * 2); ctx.stroke();
+
+      return new THREE.CanvasTexture(c);
+    }
+
+    function makeFloatingPlaqueSprite(title, subtitle, accent = '#d4af37') {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 144;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = 'rgba(7, 17, 32, 0.92)';
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 5;
+      ctx.strokeRect(8, 8, 496, 128);
+      ctx.fillRect(8, 8, 496, 128);
+
+      ctx.fillStyle = accent;
+      ctx.font = '800 21px Montserrat, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(subtitle.toUpperCase(), 256, 48, 460);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 30px Montserrat, sans-serif';
+      ctx.fillText(title, 256, 98, 465);
+
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }));
+      sp.scale.set(5.2, 1.45, 1);
+      return sp;
+    }
+
+    // ============================================================================
+    // 6. THREE.JS INDOOR ZURICH MUSEUM ARCHITECTURE (5 CONNECTED GALLERIES)
+    // ============================================================================
+    let scene, camera, renderer, clock;
+    let visitorGroup, visitorLimbs = {};
+    let localSpeechSprite = null, localSpeechTimer = null;
+    let cinemaLeaderboardMesh = null;
+    let rainbowSecurityGateMesh = null, rainbowGateCollider = null;
+
+    const solidWalls = [];       // { minX, maxX, minZ, maxZ, topY, active }
+    const stepPlatforms = [];    // { minX, maxX, minZ, maxZ, topY, pinballMeta }
+    const museumInteractables = []; // { id, title, badge, loreId, topic, isFinalCinema, x, z, radius, prompt }
+    const creditTokens = [];
+    const rotatingExhibits = [];
+    let pinballDynamicMeshes = [];
+
+    // Connected Multiplayer Classmates Map: peerId -> peerObject
+    const remotePeers = new Map();
+
+    const visitorState = {
+      pos: new THREE.Vector3(0, 0, 36),
+      velY: 0,
+      onGround: true,
+      yaw: Math.PI,
+      walkCycle: 0,
+      isMovingNow: false
+    };
+
+    const camOrbit = {
+      yaw: 0,
+      pitch: 0.34,
+      dist: 8.8,
+      dragging: false,
+      lx: 0,
+      ly: 0
+    };
+
+    const HALL_COORDS = {
+      hall1: { x: 0, z: 36, yaw: Math.PI, tag: '01 • MAIN LOBBY' },
+      hall2: { x: 0, z: -2, yaw: Math.PI, tag: '02 • RAINBOW OF 211 JERSEYS' },
+      hall3: { x: 0, z: -52, yaw: Math.PI, tag: '03 • WORLD CUP TROPHY VAULT' },
+      hall4: { x: 44, z: -52, yaw: -Math.PI / 2, tag: '04 • MEDIA MIXED ZONE & LOCKER' },
+      hall5: { x: -48, z: -26, yaw: Math.PI, tag: '05 • PINBALL & CINEMA 180°' }
+    };
+
+    function makeNameplateSprite(nameText, gradeNum, isLocal = false) {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 112;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = isLocal ? 'rgba(7, 16, 31, 0.92)' : 'rgba(6, 46, 34, 0.92)';
+      ctx.strokeStyle = isLocal ? '#00e5ff' : '#00c853';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(12, 14, 488, 84);
+      ctx.fillRect(12, 14, 488, 84);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 30px Montserrat, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`${nameText} • Gr.${gradeNum}`, 256, 56, 460);
+
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthTest: false }));
+      sp.scale.set(3.8, 0.85, 1);
+      sp.renderOrder = 10;
+      return sp;
+    }
+
+    function makeSpeechBubbleSprite(message) {
+      const c = document.createElement('canvas');
+      c.width = 640; c.height = 150;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = 'rgba(248, 250, 252, 0.97)';
+      ctx.strokeStyle = '#d4af37';
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(14, 14, 612, 102, 28);
+      } else {
+        ctx.rect(14, 14, 612, 102);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      // Speech pointer triangle
+      ctx.beginPath();
+      ctx.moveTo(298, 116);
+      ctx.lineTo(320, 142);
+      ctx.lineTo(342, 116);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#07101f';
+      ctx.font = '800 28px Montserrat, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(message, 320, 66, 580);
+
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthTest: false }));
+      sp.scale.set(4.9, 1.15, 1);
+      sp.renderOrder = 12;
+      return sp;
+    }
+
+    function makeCinemaLeaderboardTexture() {
+      const c = document.createElement('canvas');
+      c.width = 1024; c.height = 512;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#06101f';
+      ctx.fillRect(0, 0, 1024, 512);
+      ctx.strokeStyle = '#d4af37';
+      ctx.lineWidth = 10;
+      ctx.strokeRect(20, 20, 984, 472);
+
+      ctx.fillStyle = '#ffd700';
+      ctx.font = '800 28px Montserrat, sans-serif';
+      ctx.fillText(`HALL 05 • LIVE ROOM LEADERBOARD [${appState.roomCode}]`, 64, 78);
+
+      ctx.fillStyle = '#00e5ff';
+      ctx.font = '600 22px Inter, sans-serif';
+      ctx.fillText('Real-Time Junior Curators & Grammar Accuracy', 64, 116);
+
+      const sorted = [...appState.roster]
+        .filter(r => !r.roomCode || r.roomCode === appState.roomCode)
+        .sort((a, b) => ((b.exhibitsDone || 0) * 20 + (b.vtbCorrect || 0) + (b.psCorrect || 0)) - ((a.exhibitsDone || 0) * 20 + (a.vtbCorrect || 0) + (a.psCorrect || 0)))
+        .slice(0, 5);
+
+      if (!sorted.length) {
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '600 28px Inter, sans-serif';
+        ctx.fillText('Complete exhibits to appear on the Cinema 180° Wall!', 64, 240);
+      } else {
+        sorted.forEach((r, idx) => {
+          const y = 178 + idx * 62;
+          ctx.fillStyle = idx === 0 ? 'rgba(212, 175, 55, 0.22)' : 'rgba(255, 255, 255, 0.06)';
+          ctx.fillRect(60, y - 38, 904, 50);
+          const tot = (r.vtbTotal || 0) + (r.psTotal || 0);
+          const acc = tot ? Math.round(((r.vtbCorrect + r.psCorrect) / tot) * 100) : 0;
+          ctx.fillStyle = idx === 0 ? '#ffd700' : '#f8fafc';
+          ctx.font = '800 26px Montserrat, sans-serif';
+          ctx.fillText(`#${idx + 1}  ${r.name} (Gr.${r.grade})`, 82, y - 5);
+          ctx.fillStyle = '#00e5ff';
+          ctx.textAlign = 'right';
+          ctx.fillText(`Exhibits: ${r.exhibitsDone || 0}/6  •  Accuracy: ${acc}%`, 940, y - 5);
+          ctx.textAlign = 'left';
+        });
+      }
+      return new THREE.CanvasTexture(c);
+    }
+
+    function refreshCinemaLeaderboard3D() {
+      if (!cinemaLeaderboardMesh) return;
+      if (cinemaLeaderboardMesh.material.map) cinemaLeaderboardMesh.material.map.dispose();
+      cinemaLeaderboardMesh.material.map = makeCinemaLeaderboardTexture();
+      cinemaLeaderboardMesh.material.needsUpdate = true;
+    }
+
+    // ============================================================================
+    // 7. 3D ARTICULATED AVATAR FACTORY (LOCAL PLAYER + REMOTE CLASSMATES)
+    // ============================================================================
+    const KIT_PALETTES = [
+      { name: 'FIFA Pitch Emerald', hex: '#00c853', shorts: '#0b1528' },
+      { name: 'Brazil Canary Gold', hex: '#facc15', shorts: '#1d4ed8' },
+      { name: 'Argentina Sky', hex: '#38bdf8', shorts: '#0f172a' },
+      { name: 'Spain Champion Red', hex: '#dc2626', shorts: '#1e3a8a' },
+      { name: 'Real Classic White', hex: '#f8fafc', shorts: '#0f172a' },
+      { name: 'Colombia Gold', hex: '#eab308', shorts: '#1e3a8a' }
+    ];
+    const SKIN_PALETTES = ['#fde68a', '#f1c27d', '#d99b66', '#9c6234', '#5c381e'];
+    const GEAR_SHOP = [
+      { id: 'lanyard', name: 'VIP Gold Lanyard', cost: 0 },
+      { id: 'cap', name: 'Captain Visor Cap', cost: 25 },
+      { id: 'headset', name: 'Media Broadcast Mic', cost: 45 },
+      { id: 'laurel', name: 'Golden Champion Crown', cost: 80 }
+    ];
+
+    function assembleFootballerAvatar({ kitHex, shortsHex, skinHex, hatId, name, grade, isLocal }) {
+      const group = new THREE.Group();
+      const limbs = {};
+
+      const skinMat = new THREE.MeshStandardMaterial({ color: skinHex || '#f1c27d' });
+      const shirtMat = new THREE.MeshStandardMaterial({ color: kitHex || '#00c853' });
+      const shortsMat = new THREE.MeshStandardMaterial({ color: shortsHex || '#0b1528' });
+
+      const jc = document.createElement('canvas');
+      jc.width = 128; jc.height = 128;
+      const jctx = jc.getContext('2d');
+      jctx.fillStyle = kitHex || '#00c853';
+      jctx.fillRect(0, 0, 128, 128);
+      jctx.fillStyle = (kitHex === '#f8fafc' || kitHex === '#facc15' || kitHex === '#eab308') ? '#07101f' : '#ffffff';
+      jctx.font = '900 54px Montserrat, sans-serif';
+      jctx.textAlign = 'center';
+      jctx.fillText('10', 64, 82);
+      const torsoBackMat = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(jc) });
+
+      const torso = new THREE.Mesh(
+        new THREE.BoxGeometry(1.0, 1.18, 0.54),
+        [shirtMat, shirtMat, shirtMat, shirtMat, torsoBackMat, torsoBackMat]
+      );
+      torso.position.y = 1.54;
+
+      const pass = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.34, 0.58), new THREE.MeshBasicMaterial({ color: 0xd4af37 }));
+      pass.position.y = 1.55;
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.82, 0.8), skinMat);
+      head.position.y = 2.58;
+      const hair = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.24, 0.84), new THREE.MeshStandardMaterial({ color: 0x1e293b }));
+      hair.position.y = 3.04;
+
+      if (hatId === 'cap') {
+        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.22, 1.05), new THREE.MeshStandardMaterial({ color: 0x0b1528 }));
+        visor.position.set(0, 3.06, -0.1);
+        group.add(visor);
+      } else if (hatId === 'headset') {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.94, 0.16, 0.3), new THREE.MeshStandardMaterial({ color: 0x00e5ff }));
+        band.position.set(0, 3.12, 0);
+        group.add(band);
+      } else if (hatId === 'laurel') {
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.42, 0.32, 14), new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.85 }));
+        crown.position.y = 3.18;
+        group.add(crown);
+      }
+
+      const makeLimb = (w, h, mat, x, y) => {
+        const piv = new THREE.Group();
+        piv.position.set(x, y, 0);
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+        m.position.y = -h / 2;
+        piv.add(m);
+        group.add(piv);
+        return piv;
+      };
+
+      limbs.armL = makeLimb(0.32, 0.95, skinMat, -0.68, 2.05);
+      limbs.armR = makeLimb(0.32, 0.95, skinMat, 0.68, 2.05);
+      limbs.legL = makeLimb(0.38, 0.95, shortsMat, -0.24, 0.95);
+      limbs.legR = makeLimb(0.38, 0.95, shortsMat, 0.24, 0.95);
+
+      const nameplate = makeNameplateSprite(name || 'Player', grade || 1, isLocal);
+      nameplate.position.set(0, 3.72, 0);
+      group.add(torso, pass, head, hair, nameplate);
+
+      return { group, limbs, nameplate };
+    }
+
+    function buildVisitorAvatar() {
+      if (visitorGroup) scene.remove(visitorGroup);
+      const built = assembleFootballerAvatar({
+        kitHex: appState.kitHex,
+        shortsHex: appState.shortsHex,
+        skinHex: appState.skinHex,
+        hatId: appState.hatId,
+        name: appState.visitorName,
+        grade: appState.grade,
+        isLocal: true
+      });
+      visitorGroup = built.group;
+      visitorLimbs = built.limbs;
+      visitorGroup.position.copy(visitorState.pos);
+      scene.add(visitorGroup);
+    }
+
+    function showAvatarSpeechBubble(targetGroup, text, isLocalAvatar = false) {
+      if (!targetGroup) return;
+      if (isLocalAvatar && localSpeechSprite) {
+        targetGroup.remove(localSpeechSprite);
+        localSpeechSprite = null;
+        clearTimeout(localSpeechTimer);
+      }
+      const sp = makeSpeechBubbleSprite(text);
+      sp.position.set(0, 4.65, 0);
+      targetGroup.add(sp);
+      if (isLocalAvatar) {
+        localSpeechSprite = sp;
+        localSpeechTimer = setTimeout(() => {
+          if (localSpeechSprite && visitorGroup) visitorGroup.remove(localSpeechSprite);
+          localSpeechSprite = null;
+        }, 4800);
+      }
+      return sp;
+    }
+
+    // ============================================================================
+    // 7B. ZERO-CONFIG REALTIME MULTIPLAYER ENGINE (MQTT WSS + BROADCASTCHANNEL)
+    // ============================================================================
+    const BROKER_URLS = [
+      'wss://broker.emqx.io:8084/mqtt',
+      'wss://test.mosquitto.org:8081/mqtt'
+    ];
+    let mqttClient = null;
+    let brokerIdx = 0;
+    let bcChannel = null;
+    let currentSubscribedTopic = '';
+
+    function getRoomTopic() {
+      return `fifa-museum-zurich-2026/${appState.roomCode}`;
+    }
+
+    function connectMultiplayerRoom(newRoomCode) {
+      appState.roomCode = sanitizeRoomCode(newRoomCode || appState.roomCode);
+      document.getElementById('hud-room-code').textContent = appState.roomCode;
+      const syncLbl = document.getElementById('teacher-sync-status');
+      if (syncLbl) syncLbl.textContent = `🟢 Live Classroom Sync Active — Receiving scores from Room [${appState.roomCode}]`;
+
+      // Clear stale avatars from previous room
+      remotePeers.forEach(p => scene.remove(p.group));
+      remotePeers.clear();
+      updateMultiplayerRosterUI();
+      refreshCinemaLeaderboard3D();
+
+      // 1. Instant Local Multi-Tab Sync via BroadcastChannel
+      if (bcChannel) { try { bcChannel.close(); } catch (e) {} }
+      if ('BroadcastChannel' in window) {
+        bcChannel = new BroadcastChannel(getRoomTopic());
+        bcChannel.onmessage = (ev) => {
+          if (ev && ev.data) handleIncomingNetworkPacket(ev.data);
+        };
+      }
+
+      // 2. Cross-Device Global Classroom Sync via MQTT over WSS (Zero Accounts Needed)
+      const topic = getRoomTopic();
+      if (mqttClient && mqttClient.connected) {
+        if (currentSubscribedTopic && currentSubscribedTopic !== topic) {
+          try { mqttClient.unsubscribe(currentSubscribedTopic); } catch (e) {}
+        }
+        currentSubscribedTopic = topic;
+        mqttClient.subscribe(topic, { qos: 0 });
+        broadcastStatePacket(true);
+        broadcastAcademicPacket();
+        return;
+      }
+
+      initMqttBrokerConnection();
+    }
+
+    function initMqttBrokerConnection() {
+      if (typeof mqtt === 'undefined') {
+        setMpStatusUI('Local Tab Sync Active', true);
+        return;
+      }
+      const url = BROKER_URLS[brokerIdx % BROKER_URLS.length];
+      setMpStatusUI('Connecting Global Room...', true);
+
+      try {
+        if (mqttClient) { try { mqttClient.end(true); } catch (e) {} }
+        mqttClient = mqtt.connect(url, {
+          clientId: 'fifamuseum_' + CLIENT_ID + '_' + Math.floor(Math.random() * 999),
+          clean: true,
+          connectTimeout: 5000,
+          reconnectPeriod: 4000
+        });
+
+        mqttClient.on('connect', () => {
+          currentSubscribedTopic = getRoomTopic();
+          mqttClient.subscribe(currentSubscribedTopic, { qos: 0 });
+          setMpStatusUI('Global + Local Sync Live', true);
+          broadcastStatePacket(true);
+          broadcastAcademicPacket();
+        });
+
+        mqttClient.on('message', (_topic, payload) => {
+          try {
+            const data = JSON.parse(payload.toString());
+            handleIncomingNetworkPacket(data);
+          } catch (e) {}
+        });
+
+        mqttClient.on('error', () => {
+          brokerIdx++;
+          if (brokerIdx < BROKER_URLS.length * 2) {
+            setTimeout(initMqttBrokerConnection, 1500);
+          } else {
+            setMpStatusUI('Local Network Sync', true);
+          }
+        });
+      } catch (err) {
+        setMpStatusUI('Local Tab Sync Active', true);
+      }
+    }
+
+    function setMpStatusUI(text, ok) {
+      const lbl = document.getElementById('mp-transport-label');
+      const dot = document.getElementById('mp-status-dot');
+      if (lbl) lbl.textContent = text;
+      if (dot) dot.className = ok ? 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse' : 'w-2.5 h-2.5 rounded-full bg-amber-400';
+    }
+
+    function sendNetworkPacket(packet) {
+      packet.sender = CLIENT_ID;
+      packet.room = appState.roomCode;
+      if (bcChannel) {
+        try { bcChannel.postMessage(packet); } catch (e) {}
+      }
+      if (mqttClient && mqttClient.connected) {
+        try {
+          mqttClient.publish(getRoomTopic(), JSON.stringify(packet), { qos: 0 });
+        } catch (e) {}
+      }
+    }
+
+    function broadcastStatePacket(forceHello = false) {
+      if (!activePlayable && !forceHello) return;
+      sendNetworkPacket({
+        t: 'pos',
+        name: appState.visitorName,
+        grade: appState.grade,
+        kitHex: appState.kitHex,
+        shortsHex: appState.shortsHex,
+        skinHex: appState.skinHex,
+        hatId: appState.hatId,
+        x: Number(visitorState.pos.x.toFixed(2)),
+        y: Number(visitorState.pos.y.toFixed(2)),
+        z: Number(visitorState.pos.z.toFixed(2)),
+        yaw: Number(visitorState.yaw.toFixed(2)),
+        moving: visitorState.isMovingNow ? 1 : 0,
+        hello: forceHello ? 1 : 0
+      });
+    }
+
+    function broadcastQuickChat(phrase) {
+      showAvatarSpeechBubble(visitorGroup, phrase, true);
+      speakGuide(phrase.replace(/^[^\w]+/, ''));
+      playChime('credit');
+      sendNetworkPacket({
+        t: 'chat',
+        name: appState.visitorName,
+        grade: appState.grade,
+        phrase
+      });
+    }
+
+    function broadcastAcademicPacket() {
+      const rec = buildLocalAcademicRecord();
+      upsertRosterRecord(rec);
+      sendNetworkPacket({
+        t: 'score',
+        record: rec
+      });
+      refreshCinemaLeaderboard3D();
+    }
+
+    function handleIncomingNetworkPacket(pkt) {
+      if (!pkt || pkt.sender === CLIENT_ID || pkt.room !== appState.roomCode) return;
+
+      if (pkt.t === 'pos') {
+        let peer = remotePeers.get(pkt.sender);
+        const appearanceSig = `${pkt.name}|${pkt.grade}|${pkt.kitHex}|${pkt.skinHex}|${pkt.hatId}`;
+
+        if (!peer) {
+          const built = assembleFootballerAvatar({
+            kitHex: pkt.kitHex,
+            shortsHex: pkt.shortsHex,
+            skinHex: pkt.skinHex,
+            hatId: pkt.hatId,
+            name: pkt.name,
+            grade: pkt.grade,
+            isLocal: false
+          });
+          built.group.position.set(pkt.x || 0, pkt.y || 0, pkt.z || 36);
+          scene.add(built.group);
+          peer = {
+            id: pkt.sender,
+            name: pkt.name || 'Classmate',
+            grade: pkt.grade || 1,
+            sig: appearanceSig,
+            group: built.group,
+            limbs: built.limbs,
+            targetPos: new THREE.Vector3(pkt.x || 0, pkt.y || 0, pkt.z || 36),
+            targetYaw: pkt.yaw || Math.PI,
+            moving: !!pkt.moving,
+            walkPhase: Math.random() * 5,
+            lastSeen: Date.now(),
+            bubbleSprite: null,
+            bubbleTimer: null
+          };
+          remotePeers.set(pkt.sender, peer);
+          updateMultiplayerRosterUI();
+          if (pkt.hello) {
+            notifyMuseum(`👋 ${peer.name} (Grade ${peer.grade}) joined Room ${appState.roomCode}!`, 'emerald');
+            // Reply with our position & score so newcomer sees us immediately
+            setTimeout(() => { broadcastStatePacket(false); broadcastAcademicPacket(); }, 250);
+          }
+        } else {
+          if (peer.sig !== appearanceSig) {
+            scene.remove(peer.group);
+            const built = assembleFootballerAvatar({
+              kitHex: pkt.kitHex,
+              shortsHex: pkt.shortsHex,
+              skinHex: pkt.skinHex,
+              hatId: pkt.hatId,
+              name: pkt.name,
+              grade: pkt.grade,
+              isLocal: false
+            });
+            built.group.position.copy(peer.group.position);
+            scene.add(built.group);
+            peer.group = built.group;
+            peer.limbs = built.limbs;
+            peer.name = pkt.name;
+            peer.grade = pkt.grade;
+            peer.sig = appearanceSig;
+            updateMultiplayerRosterUI();
+          }
+          peer.targetPos.set(pkt.x || 0, pkt.y || 0, pkt.z || 36);
+          peer.targetYaw = pkt.yaw || 0;
+          peer.moving = !!pkt.moving;
+          peer.lastSeen = Date.now();
+        }
+      } else if (pkt.t === 'chat' && pkt.phrase) {
+        const peer = remotePeers.get(pkt.sender);
+        if (peer && peer.group) {
+          if (peer.bubbleSprite) peer.group.remove(peer.bubbleSprite);
+          clearTimeout(peer.bubbleTimer);
+          const sp = showAvatarSpeechBubble(peer.group, pkt.phrase, false);
+          peer.bubbleSprite = sp;
+          peer.bubbleTimer = setTimeout(() => {
+            if (peer.bubbleSprite) peer.group.remove(peer.bubbleSprite);
+            peer.bubbleSprite = null;
+          }, 4800);
+        }
+        notifyMuseum(`💬 ${pkt.name}: ${pkt.phrase}`, 'emerald');
+      } else if (pkt.t === 'score' && pkt.record) {
+        upsertRosterRecord(pkt.record);
+        refreshCinemaLeaderboard3D();
+        if (!document.getElementById('teacher-modal').classList.contains('hidden')) {
+          renderTeacherRows();
+        }
+      }
+    }
+
+    function pruneInactivePeers() {
+      const now = Date.now();
+      let changed = false;
+      remotePeers.forEach((peer, id) => {
+        if (now - peer.lastSeen > 16000) {
+          scene.remove(peer.group);
+          remotePeers.delete(id);
+          changed = true;
+        }
+      });
+      if (changed) updateMultiplayerRosterUI();
+    }
+
+    function updateMultiplayerRosterUI() {
+      const totalOnline = 1 + remotePeers.size;
+      const cntEl = document.getElementById('hud-online-count');
+      if (cntEl) cntEl.textContent = `${totalOnline} ${totalOnline === 1 ? 'Player' : 'Players'}`;
+
+      const listEl = document.getElementById('hud-peer-list');
+      if (!listEl) return;
+
+      const items = [
+        `<div class="flex items-center justify-between bg-white/5 px-2.5 py-1.5 rounded-lg border border-[#00e5ff]/30">
+          <span class="font-bold text-[#00e5ff] truncate">● ${appState.visitorName} (You)</span>
+          <span class="text-[10px] text-[#ffd700] font-bold">Gr.${appState.grade}</span>
+        </div>`
+      ];
+
+      remotePeers.forEach(p => {
+        items.push(
+          `<div class="flex items-center justify-between bg-white/5 px-2.5 py-1.5 rounded-lg">
+            <span class="font-semibold text-emerald-300 truncate">● ${p.name}</span>
+            <span class="text-[10px] text-slate-300 font-bold">Gr.${p.grade}</span>
+          </div>`
+        );
+      });
+
+      listEl.innerHTML = items.join('');
+    }
+
+    function addArchWall(x, z, w, h, d, hex, collidable = true) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, d),
+        new THREE.MeshStandardMaterial({ color: hex, roughness: 0.45, metalness: 0.15 })
+      );
+      mesh.position.set(x, h / 2, z);
+      scene.add(mesh);
+
+      let collider = null;
+      if (collidable) {
+        collider = {
+          minX: x - w / 2 - 0.45,
+          maxX: x + w / 2 + 0.45,
+          minZ: z - d / 2 - 0.45,
+          maxZ: z + d / 2 + 0.45,
+          topY: h,
+          active: true
+        };
+        solidWalls.push(collider);
+      }
+      return { mesh, collider };
+    }
+
+    function addWallMural(x, y, z, w, h, rotY, tag, headline, subline, accent = '#d4af37') {
+      const tex = makeArchitecturalWallPanel(tag, headline, subline, accent);
+      const board = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, h),
+        new THREE.MeshBasicMaterial({ map: tex })
+      );
+      board.position.set(x, y, z);
+      board.rotation.y = rotY;
+      scene.add(board);
+    }
+
+    // Stanchion Velvet Rope Ring + Bulletproof Cylindrical Glass Vitrine
+    function addMuseumVitrine({ id, x, z, title, subtitle, loreId, topic, artifactBuilder }) {
+      const group = new THREE.Group();
+      group.position.set(x, 0, z);
+
+      // Dark Anthracite Pedestal + Gold Chamfer Ring
+      const ped = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.35, 1.5, 1.45, 28),
+        new THREE.MeshStandardMaterial({ color: 0x0b1526, roughness: 0.3, metalness: 0.5 })
+      );
+      ped.position.y = 0.725;
+      const goldTrim = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.4, 1.4, 0.1, 28),
+        new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.85, roughness: 0.2 })
+      );
+      goldTrim.position.y = 1.46;
+
+      // Illuminated White Museum Plinth Top
+      const lightDisc = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.22, 1.22, 0.06, 28),
+        new THREE.MeshBasicMaterial({ color: 0xfef9c3 })
+      );
+      lightDisc.position.y = 1.51;
+
+      // Cylindrical Bulletproof Glass Case
+      const glass = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.3, 1.3, 2.5, 28),
+        new THREE.MeshPhysicalMaterial({ color: 0xdbeafe, transparent: true, opacity: 0.24, roughness: 0.08 })
+      );
+      glass.position.y = 2.75;
+
+      const cap = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.34, 1.34, 0.14, 28),
+        new THREE.MeshStandardMaterial({ color: 0x0f1e36, metalness: 0.6 })
+      );
+      cap.position.y = 4.04;
+
+      // 4 Brass Stanchion Posts + Red Velvet Ropes
+      const postMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.25 });
+      const ropeMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.7 });
+      const rStanchion = 2.15;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const px = Math.cos(a) * rStanchion, pz = Math.sin(a) * rStanchion;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.95, 10), postMat);
+        post.position.set(px, 0.48, pz);
+        group.add(post);
+      }
+      const ropeRing = new THREE.Mesh(new THREE.TorusGeometry(rStanchion, 0.04, 8, 32), ropeMat);
+      ropeRing.rotation.x = Math.PI / 2;
+      ropeRing.position.y = 0.82;
+      group.add(ropeRing);
+
+      // Custom 3D Sculpted Artifact Inside Glass
+      const artHolder = new THREE.Group();
+      artHolder.position.y = 1.65;
+      if (artifactBuilder) artifactBuilder(artHolder);
+      group.add(ped, goldTrim, lightDisc, artHolder, glass, cap);
+      rotatingExhibits.push(artHolder);
+
+      const plaque = makeFloatingPlaqueSprite(title, subtitle);
+      plaque.position.set(0, 4.95, 0);
+      group.add(plaque);
+
+      scene.add(group);
+      solidWalls.push({ minX: x - 1.85, maxX: x + 1.85, minZ: z - 1.85, maxZ: z + 1.85, topY: 4.2, active: true });
+
+      museumInteractables.push({
+        id, title, badge: subtitle, loreId, topic, isFinalCinema: false,
+        x, z, radius: 4.3,
+        prompt: `Inspect Vitrine: ${title}`
+      });
+    }
+
+    // Official Museum Docent / Curator in Navy FIFA Blazer & Gold Lanyard
+    function addMuseumDocent({ id, name, role, x, z, rotY = 0, loreId, topic, blazerHex = 0x0b1d3a }) {
+      const g = new THREE.Group();
+      g.position.set(x, 0, z);
+      g.rotation.y = rotY;
+
+      const trouserMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+      const blazerMat = new THREE.MeshStandardMaterial({ color: blazerHex });
+      const skinMat = new THREE.MeshStandardMaterial({ color: 0xf1c27d });
+
+      const legL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.0, 0.4), trouserMat);
+      legL.position.set(-0.24, 0.5, 0);
+      const legR = legL.clone(); legR.position.set(0.24, 0.5, 0);
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.25, 0.58), blazerMat);
+      torso.position.y = 1.62;
+
+      // Official FIFA Accreditation Gold Lanyard & Badge on Chest
+      const lanyard = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.55, 0.61), new THREE.MeshBasicMaterial({ color: 0xd4af37 }));
+      lanyard.position.y = 1.78;
+      const passCard = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.34, 0.63), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      passCard.position.y = 1.45;
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.85, 0.82), skinMat);
+      head.position.y = 2.72;
+      const hair = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.25, 0.86), new THREE.MeshStandardMaterial({ color: 0x27272a }));
+      hair.position.y = 3.2;
+
+      const plaque = makeFloatingPlaqueSprite(name, role, '#00d2ff');
+      plaque.position.y = 4.15;
+
+      g.add(legL, legR, torso, lanyard, passCard, head, hair, plaque);
+      scene.add(g);
+
+      museumInteractables.push({
+        id, title: name, badge: role, loreId, topic, isFinalCinema: false,
+        x, z, radius: 3.8,
+        prompt: `Speak with ${name} (${role})`
+      });
+    }
+
+    // 3D Mini Jersey Mesh for the Iconic 211 Member Associations Rainbow Installation
+    function createMiniJerseyMesh(colorHex) {
+      const j = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.22, roughness: 0.4 });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.78, 0.14), mat);
+      const slL = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.34, 0.14), mat);
+      slL.position.set(-0.42, 0.2, 0);
+      const slR = slL.clone(); slR.position.set(0.42, 0.2, 0);
+      j.add(body, slL, slR);
+      return j;
+    }
+
+    // Sculpted 3D FIFA World Cup Trophy (Gold + Green Malachite Base Rings)
+    function buildSculptedWorldCup(targetGroup, scale = 1) {
+      const gold = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.88, roughness: 0.18 });
+      const malachite = new THREE.MeshStandardMaterial({ color: 0x00a859, roughness: 0.3 });
+      const root = new THREE.Group();
+      const b1 = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.56, 0.2, 24), gold);
+      b1.position.y = 0.1;
+      const m1 = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.48, 0.12, 24), malachite);
+      m1.position.y = 0.26;
+      const m2 = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.46, 0.1, 24), malachite);
+      m2.position.y = 0.44;
+      const spiral = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.42, 0.85, 18), gold);
+      spiral.position.y = 0.9;
+      const globe = new THREE.Mesh(new THREE.SphereGeometry(0.46, 24, 24), gold);
+      globe.position.y = 1.55;
+      root.add(b1, m1, m2, spiral, globe);
+      root.scale.setScalar(scale);
+      targetGroup.add(root);
+    }
+
+    function buildEntireZurichMuseum() {
+      scene.background = new THREE.Color(0x070f1d);
+      scene.fog = new THREE.FogExp2(0x070f1d, 0.0065);
+
+      // Balanced Indoor Architectural Museum Illumination
+      scene.add(new THREE.AmbientLight(0xdbeafe, 0.62));
+      const hemi = new THREE.HemisphereLight(0xf8fafc, 0x0f172a, 0.55);
+      scene.add(hemi);
+
+      // Polished Dark Slate Museum Floor across entire complex
+      const floorGeo = new THREE.PlaneGeometry(170, 190);
+      const floorMat = new THREE.MeshStandardMaterial({ map: makeSlateFloorTexture(), roughness: 0.25, metalness: 0.2 });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      scene.add(floor);
+      stepPlatforms.push({ minX: -85, maxX: 85, minZ: -120, maxZ: 65, topY: 0 });
+
+      // Architectural Ceiling Coffered Beams & Warm Track Light Pools
+      for (let z = 48; z >= -102; z -= 18) {
+        const beam = new THREE.Mesh(
+          new THREE.BoxGeometry(144, 0.6, 0.9),
+          new THREE.MeshStandardMaterial({ color: 0x0b1629 })
+        );
+        beam.position.set(0, 12.2, z);
+        scene.add(beam);
+
+        const strip = new THREE.Mesh(
+          new THREE.BoxGeometry(42, 0.12, 0.28),
+          new THREE.MeshBasicMaterial({ color: 0xfef3c7 })
+        );
+        strip.position.set(0, 11.85, z);
+        scene.add(strip);
+      }
+
+      // Glowing Floor LED Guide Strips Connecting the 5 Galleries
+      const addFloorLED = (x, z, w, d, hex) => {
+        const led = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: hex }));
+        led.rotation.x = -Math.PI / 2;
+        led.position.set(x, 0.02, z);
+        scene.add(led);
+      };
+      addFloorLED(0, 12, 0.35, 52, 0x00d2ff);   // Atrium -> Rainbow -> Rotunda Spine
+      addFloorLED(0, -32, 0.35, 38, 0xd4af37);
+      addFloorLED(24, -52, 36, 0.35, 0x00a859); // Rotunda -> Hall 4 Media Mixed Zone
+      addFloorLED(-24, -52, 36, 0.35, 0x00d2ff);// Rotunda -> Hall 5 Pinball & Cinema 180
+
+      // Outer Perimeter Museum Walls
+      addArchWall(0, 52, 64, 12.5, 1.5, 0x0d1b30);     // South Entrance Wall
+      addArchWall(-32, 16, 1.5, 12.5, 72, 0x11223d);   // West Atrium/Rainbow Wall
+      addArchWall(32, 16, 1.5, 12.5, 72, 0x11223d);    // East Atrium/Rainbow Wall
+      addArchWall(0, -104, 146, 12.5, 1.5, 0x0d1b30);  // North Back Wall
+      addArchWall(-72, -62, 1.5, 12.5, 84, 0x11223d);  // Far West Pinball Wall
+      addArchWall(72, -62, 1.5, 12.5, 84, 0x11223d);   // Far East Media Zone Wall
+      addArchWall(-52, -20, 40, 12.5, 1.5, 0x11223d);  // South-West Wing Closure
+      addArchWall(52, -20, 40, 12.5, 1.5, 0x11223d);   // South-East Wing Closure
+
+      // ==================== HALL 01: ZURICH MAIN ATRIUM & RECEPTION (z: 22..50) ====================
+      addWallMural(0, 7.2, 51.1, 26, 6.2, Math.PI,
+        'SEESTRASSE 27 • ZURICH, SWITZERLAND',
+        'WELCOME TO THE FIFA MUSEUM',
+        'Explore 5 architectural galleries of World Football heritage while mastering English Verb to Be & Present Simple.',
+        '#d4af37'
+      );
+
+      // Curved Contemporary Reception Desk
+      addArchWall(-10, 36, 9.5, 1.35, 2.4, 0x0b1526);
+      const deskFront = new THREE.Mesh(new THREE.BoxGeometry(9.7, 0.22, 2.55), new THREE.MeshStandardMaterial({ color: 0xd4af37 }));
+      deskFront.position.set(-10, 1.4, 36);
+      scene.add(deskFront);
+
+      // Stainless Steel & Glass Museum Entrance Turnstiles
+      [-4.5, -1.5, 1.5, 4.5].forEach(tx => {
+        addArchWall(tx, 27, 0.45, 1.15, 2.2, 0x94a3b8, false);
+        const flap = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.75, 0.08), new THREE.MeshBasicMaterial({ color: 0x00d2ff, transparent: true, opacity: 0.45 }));
+        flap.position.set(tx + 0.55, 0.65, 27);
+        scene.add(flap);
+      });
+
+      addMuseumDocent({
+        id: 'docent_atrium', name: 'Lead Curator Lukas', role: 'HALL 01 • ZURICH RECEPTION',
+        x: -10, z: 33.2, rotY: 0, loreId: 'zurich_info', topic: 'vtb'
+      });
+
+      addMuseumVitrine({
+        id: 'vit_1930', x: 12, z: 35,
+        title: 'Uruguay 1930 Centenary Ball', subtitle: 'HALL 01 • ORIGINS ARTIFACT',
+        loreId: 'uruguay1930_ball', topic: 'vtb',
+        artifactBuilder: (g) => {
+          const ball = new THREE.Mesh(new THREE.SphereGeometry(0.52, 20, 20), new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.65 }));
+          ball.position.y = 0.55;
+          g.add(ball);
+        }
+      });
+
+      // ==================== HALL 02: THE RAINBOW OF 211 NATIONAL JERSEYS (z: -16..18) ====================
+      const rainbowLight = new THREE.PointLight(0xffffff, 0.9, 32);
+      rainbowLight.position.set(0, 8, 2);
+      scene.add(rainbowLight);
+
+      // Iconic Circular Glass Ring housing 48 3D Mini Jerseys arranged in a Full Color Spectrum!
+      const ringRadius = 9.5;
+      const glassRing = new THREE.Mesh(
+        new THREE.CylinderGeometry(ringRadius + 0.35, ringRadius + 0.35, 3.6, 48, 1, true),
+        new THREE.MeshPhysicalMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.18, side: THREE.DoubleSide })
+      );
+      glassRing.position.set(0, 3.6, 2);
+      scene.add(glassRing);
+
+      const haloTop = new THREE.Mesh(new THREE.TorusGeometry(ringRadius + 0.35, 0.14, 12, 64), new THREE.MeshBasicMaterial({ color: 0xd4af37 }));
+      haloTop.rotation.x = Math.PI / 2;
+      haloTop.position.set(0, 5.4, 2);
+      scene.add(haloTop);
+
+      for (let i = 0; i < 36; i++) {
+        const ang = (i / 36) * Math.PI * 2;
+        const color = new THREE.Color().setHSL(i / 36, 0.88, 0.52);
+        const jersey = createMiniJerseyMesh(color.getHex());
+        jersey.position.set(Math.cos(ang) * ringRadius, 3.6 + (i % 2) * 0.65 - 0.3, 2 + Math.sin(ang) * ringRadius);
+        jersey.lookAt(0, jersey.position.y, 2);
+        scene.add(jersey);
+      }
+
+      addWallMural(-31.1, 6.2, 2, 22, 5.2, Math.PI / 2,
+        'HALL 02 • THE RAINBOW INSTALLATION',
+        '211 MEMBER ASSOCIATIONS IN ONE SPECTRUM',
+        'Brazil wears five stars, Germany & Italy four, Argentina three, and Spain two (2010 & 2026). Every nation belongs here!',
+        '#00d2ff'
+      );
+      addWallMural(31.1, 6.2, 2, 22, 5.2, -Math.PI / 2,
+        'HALL 02 • AMERICAS & WOMEN’S HERITAGE',
+        'COLOMBIA PRIDE & USWNT 4 STARS',
+        'Grammar Focus: Singular & Plural Verb to Be — "Brazil is a five-time champion" • "The jerseys are colorful."',
+        '#00a859'
+      );
+
+      addMuseumDocent({
+        id: 'docent_rainbow', name: 'Curator Elena', role: 'HALL 02 • RAINBOW GALLERY GATE',
+        x: -5.5, z: -13.5, rotY: 0.3, loreId: 'brazil5', topic: 'vtb'
+      });
+
+      // Partition Arch & Security Sliding Glass Gate into World Cup Trophy Rotunda
+      addArchWall(-20, -18, 24, 12.5, 1.4, 0x0f1e36);
+      addArchWall(20, -18, 24, 12.5, 1.4, 0x0f1e36);
+      const gateObj = addArchWall(0, -18, 15.6, 5.5, 0.35, 0x00d2ff, true);
+      gateObj.mesh.material.transparent = true;
+      gateObj.mesh.material.opacity = 0.38;
+      rainbowSecurityGateMesh = gateObj.mesh;
+      rainbowGateCollider = gateObj.collider;
+      if (appState.unlockedGates.rainbowGate) {
+        rainbowSecurityGateMesh.position.y = 10.5;
+        rainbowGateCollider.active = false;
+      }
+
+      // ==================== HALL 03: WORLD CUP TROPHY ROTUNDA & LEGENDS (z: -52) ====================
+      const vaultGlow = new THREE.PointLight(0xffd700, 1.25, 34);
+      vaultGlow.position.set(0, 9.5, -52);
+      scene.add(vaultGlow);
+
+      // Golden Floor Medallion under the World Cup Trophy
+      const medallion = new THREE.Mesh(
+        new THREE.RingGeometry(4.2, 4.65, 48),
+        new THREE.MeshBasicMaterial({ color: 0xd4af37, side: THREE.DoubleSide })
+      );
+      medallion.rotation.x = -Math.PI / 2;
+      medallion.position.set(0, 0.03, -52);
+      scene.add(medallion);
+
+      // Centerpiece: Original FIFA World Cup Trophy Vitrine
+      addMuseumVitrine({
+        id: 'vit_worldcup', x: 0, z: -52,
+        title: 'FIFA World Cup Trophy', subtitle: 'CROWN JEWEL • ZURICH VAULT',
+        loreId: 'wctrophy', topic: 'vtb',
+        artifactBuilder: (g) => buildSculptedWorldCup(g, 0.95)
+      });
+
+      // Surrounding Legends & Iconic Curiosities Vitrines in the Rotunda
+      addMuseumVitrine({
+        id: 'vit_messi', x: -13, z: -42,
+        title: 'Lionel Messi: 8 Ballon d’Ors', subtitle: 'LEGENDS VITRINE',
+        loreId: 'messi', topic: 'vtb',
+        artifactBuilder: (g) => {
+          const orb = new THREE.Mesh(new THREE.SphereGeometry(0.52, 24, 24), new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.9, roughness: 0.15 }));
+          orb.position.y = 0.65;
+          g.add(orb);
+        }
+      });
+
+      addMuseumVitrine({
+        id: 'vit_pele', x: 13, z: -42,
+        title: 'Pelé: 3 World Cup Crowns', subtitle: 'LEGENDS VITRINE',
+        loreId: 'pele', topic: 'ps',
+        artifactBuilder: (g) => buildSculptedWorldCup(g, 0.7)
+      });
+
+      addMuseumVitrine({
+        id: 'vit_pickles', x: -13, z: -62,
+        title: 'Pickles the 1966 Hero Dog', subtitle: '1966 LONDON ARTIFACT',
+        loreId: 'pickles1966', topic: 'ps',
+        artifactBuilder: (g) => {
+          const dogBody = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.5, 0.45), new THREE.MeshStandardMaterial({ color: 0xf8fafc }));
+          dogBody.position.y = 0.45;
+          const dogHead = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.42), new THREE.MeshStandardMaterial({ color: 0x111827 }));
+          dogHead.position.set(0.42, 0.78, 0);
+          g.add(dogBody, dogHead);
+        }
+      });
+
+      addMuseumVitrine({
+        id: 'vit_cards1970', x: 13, z: -62,
+        title: 'Ken Aston’s 1970 Cards', subtitle: 'REFEREE INNOVATION',
+        loreId: 'cards1970', topic: 'ps',
+        artifactBuilder: (g) => {
+          const yCard = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.72, 0.06), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
+          yCard.position.set(-0.28, 0.6, 0);
+          const rCard = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.72, 0.06), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
+          rCard.position.set(0.28, 0.6, 0);
+          g.add(yCard, rCard);
+        }
+      });
+
+      addMuseumVitrine({
+        id: 'vit_marta_cr7', x: 0, z: -72,
+        title: 'Marta (17 WC Goals) & Cristiano', subtitle: 'ALL-TIME SCORERS',
+        loreId: 'marta', topic: 'ps',
+        artifactBuilder: (g) => {
+          const bootSole = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.38), new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.85 }));
+          bootSole.position.y = 0.35;
+          const bootTop = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.36), new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.75 }));
+          bootTop.position.set(-0.2, 0.62, 0);
+          g.add(bootSole, bootTop);
+        }
+      });
+
+      // ==================== HALL 04: MEDIA MIXED ZONE & LOCKER ROOM (x: 28..70, z: -85..-24) ====================
+      addWallMural(71.1, 6.2, -52, 28, 5.8, -Math.PI / 2,
+        'HALL 04 • FIFA MEDIA MIXED ZONE & TACTICS',
+        'PRESENT SIMPLE: DAILY CHAMPION ROUTINES',
+        'Affirmative (-s / -es / -ies), Negative (don’t / doesn’t), and Press Questions (Do / Does).',
+        '#00a859'
+      );
+
+      // Official National Team Locker Room Bench & Hanging Jerseys Display
+      addArchWall(52, -82, 22, 5.2, 2.2, 0x0f1e36);
+      [0xfacc15, 0x38bdf8, 0xef4444, 0x00a859, 0xffffff].forEach((hex, idx) => {
+        const kit = createMiniJerseyMesh(hex);
+        kit.scale.setScalar(1.8);
+        kit.position.set(44 + idx * 4, 3.1, -80.5);
+        scene.add(kit);
+      });
+
+      // Press Conference Interview Desk & Microphones
+      addArchWall(56, -38, 10, 1.3, 2.2, 0x1e3a8a);
+      addMuseumDocent({
+        id: 'docent_press', name: 'Media Officer Clara', role: 'HALL 04 • PRESS MIXED ZONE',
+        x: 56, z: -41, rotY: 0, loreId: 'clubs_century', topic: 'ps', blazerHex: 0x064e3b
+      });
+      addMuseumDocent({
+        id: 'docent_tactics', name: 'Analyst Coach Marco', role: 'HALL 04 • TACTICAL LAB',
+        x: 42, z: -66, rotY: 0.5, loreId: 'cruyff', topic: 'ps', blazerHex: 0x1e293b
+      });
+
+      // ==================== HALL 05: "THE PINBALL" ARENA & CINEMA 180° (x: -70..-28, z: -98..-24) ====================
+      // Indoor Synthetic Turf Skill Strip (Modeled after FIFA Museum's famous "The Pinball" interactive zone!)
+      const turfStrip = new THREE.Mesh(
+        new THREE.BoxGeometry(22, 0.14, 36),
+        new THREE.MeshStandardMaterial({ color: 0x065f46, roughness: 0.7 })
+      );
+      turfStrip.position.set(-48, 0.07, -46);
+      scene.add(turfStrip);
+
+      addWallMural(-71.1, 6.2, -46, 26, 5.5, Math.PI / 2,
+        'HALL 05 • THE PINBALL INTERACTIVE ZONE',
+        'STEP ON THE ACCURATE GRAMMAR TARGET PADS',
+        'Cross all three illuminated target rows to reach the 180° Cinema Auditorium!',
+        '#00d2ff'
+      );
+
+      buildPinballTargetPads();
+
+      // Grand Curved "VISIONS OF FOOTBALL" 180° Cinema Screen at North End of Hall 5 (x: -48, z: -92)
+      const cinemaScreen = new THREE.Mesh(
+        new THREE.CylinderGeometry(13, 13, 7.5, 32, 1, true, -Math.PI * 0.42, Math.PI * 0.84),
+        new THREE.MeshBasicMaterial({
+          map: makeArchitecturalWallPanel(
+            'CINEMA 180° • FINAL CURATOR ACCREDITATION',
+            'VISIONS OF WORLD FOOTBALL',
+            'Complete the 4-Stage Archive Restoration Shootout to earn your Official Zurich Junior Curator Diploma!',
+            '#d4af37', '#050d1a'
+          ),
+          side: THREE.DoubleSide
+        })
+      );
+      cinemaScreen.position.set(-48, 4.6, -89);
+      scene.add(cinemaScreen);
+
+      // Live Multiplayer Room Leaderboard Wall inside Hall 5 Auditorium
+      cinemaLeaderboardMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(16, 8),
+        new THREE.MeshBasicMaterial({ map: makeCinemaLeaderboardTexture() })
+      );
+      cinemaLeaderboardMesh.position.set(-70.9, 5.4, -74);
+      cinemaLeaderboardMesh.rotation.y = Math.PI / 2;
+      scene.add(cinemaLeaderboardMesh);
+
+      // Final Interactive Cinema Podium Console
+      addMuseumVitrine({
+        id: 'cinema_final_console', x: -48, z: -83,
+        title: 'Cinema 180° Final Accreditation', subtitle: 'FINAL 4-STAGE RESTORATION',
+        loreId: 'wctrophy', topic: 'mixed',
+        artifactBuilder: (g) => buildSculptedWorldCup(g, 0.8)
+      });
+      // Mark final console flag
+      museumInteractables[museumInteractables.length - 1].isFinalCinema = true;
+      museumInteractables[museumInteractables.length - 1].prompt = 'Start Final Cinema 180° Accreditation (4 Stages)';
+
+      // Collectible Golden FIFA Museum Commemorative Medallions along galleries
+      [
+        [0, 42], [0, 20], [-8, 2], [8, 2], [0, -34],
+        [24, -52], [48, -52], [-24, -52], [-48, -28]
+      ].forEach(([cx, cz]) => {
+        const token = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.42, 0.42, 0.1, 20),
+          new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.85, roughness: 0.2 })
+        );
+        token.rotation.x = Math.PI / 2;
+        token.position.set(cx, 1.05, cz);
+        scene.add(token);
+        creditTokens.push({ mesh: token, taken: false });
+      });
+    }
+
+    function buildPinballTargetPads() {
+      pinballDynamicMeshes.forEach(o => {
+        scene.remove(o.mesh);
+        scene.remove(o.sprite);
+        const idx = stepPlatforms.indexOf(o.plat);
+        if (idx >= 0) stepPlatforms.splice(idx, 1);
+      });
+      pinballDynamicMeshes = [];
+
+      const rows = PINBALL_TARGETS[appState.grade] || PINBALL_TARGETS[1];
+      rows.forEach((r, rIdx) => {
+        const zRow = -34 - rIdx * 9.5;
+        const headerSp = makeFloatingPlaqueSprite(r.banner, 'PINBALL GRAMMAR ROW', '#00d2ff');
+        headerSp.position.set(-48, 3.5, zRow);
+        scene.add(headerSp);
+        pinballDynamicMeshes.push({ mesh: new THREE.Group(), sprite: headerSp, plat: null });
+
+        r.opts.forEach((optLabel, cIdx) => {
+          const xPad = -54 + cIdx * 6;
+          const padMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(4.4, 0.36, 4.2),
+            new THREE.MeshStandardMaterial({ color: 0x1e3a8a, emissive: 0x0284c7, emissiveIntensity: 0.25 })
+          );
+          padMesh.position.set(xPad, 0.22, zRow);
+          scene.add(padMesh);
+
+          const sp = makeFloatingPlaqueSprite(optLabel, 'STEP PAD', '#d4af37');
+          sp.scale.set(3.4, 0.95, 1);
+          sp.position.set(xPad, 1.45, zRow);
+          scene.add(sp);
+
+          const plat = {
+            minX: xPad - 2.2, maxX: xPad + 2.2,
+            minZ: zRow - 2.1, maxZ: zRow + 2.1,
+            topY: 0.4,
+            pinballMeta: { isCorrect: cIdx === r.ok, rowIndex: rIdx, mesh: padMesh, solved: false }
+          };
+          stepPlatforms.push(plat);
+          pinballDynamicMeshes.push({ mesh: padMesh, sprite: sp, plat });
+        });
+      });
+    }
+
+    // ============================================================================
+    // 8. ARTIFACT INSPECTION, GRAMMAR VERIFICATION & FINAL CINEMA 180° SHOOTOUT
+    // ============================================================================
+    let activeSession = null;
+    let builderTokens = [];
+    let askedIds = new Set();
+    let activePlayable = false;
+    let modalOpen = false;
+    let closestExhibit = null;
+
+    function pickCurriculumQuestion(topic) {
+      let pool = QUESTIONS.filter(q => q.g === appState.grade);
+      if (topic && topic !== 'mixed' && topic !== 'vtb_or_ps') {
+        pool = pool.filter(q => q.topic === topic);
+      }
+      const unseen = pool.filter(q => !askedIds.has(q.id));
+      const src = unseen.length ? unseen : pool;
+      if (!unseen.length) askedIds.clear();
+      const picked = src[Math.floor(Math.random() * src.length)];
+      askedIds.add(picked.id);
+      return picked;
+    }
+
+    function openExhibitInspection(item) {
+      modalOpen = true;
+      const lore = findLoreById(item.loreId);
+      activeSession = {
+        item,
+        lore,
+        isShootout: item.isFinalCinema,
+        stage: 1,
+        totalStages: item.isFinalCinema ? 4 : 1,
+        question: null,
+        solvedCurrent: false
+      };
+
+      document.getElementById('exhibit-modal').classList.remove('hidden');
+      document.getElementById('ex-badge').textContent = item.badge;
+      document.getElementById('ex-title').textContent = lore.title;
+      document.getElementById('ex-history-es').textContent = lore.es;
+      document.getElementById('ex-model-en').textContent = `"${lore.en}"`;
+
+      document.getElementById('btn-listen-guide').onclick = () => speakGuide(lore.en);
+
+      if (activeSession.isShootout) {
+        document.getElementById('ex-shootout-bar-wrap').classList.remove('hidden');
+      } else {
+        document.getElementById('ex-shootout-bar-wrap').classList.add('hidden');
+      }
+
+      loadSessionQuestion(true);
+    }
+
+    function loadSessionQuestion(speakLoreFirst = false) {
+      const q = pickCurriculumQuestion(activeSession.item.topic);
+      activeSession.question = q;
+      activeSession.solvedCurrent = false;
+
+      document.getElementById('ex-grammar-tag').textContent = q.topic === 'vtb' ? 'Verb to Be' : 'Present Simple';
+      document.getElementById('ex-question-prompt').textContent = q.q;
+      document.getElementById('ex-feedback-box').classList.add('hidden');
+
+      if (activeSession.isShootout) {
+        document.getElementById('ex-shootout-step').textContent = `Stage ${activeSession.stage} of ${activeSession.totalStages}`;
+        document.getElementById('ex-shootout-fill').style.width = `${(activeSession.stage / activeSession.totalStages) * 100}%`;
+      }
+
+      if (speakLoreFirst) speakGuide(`${activeSession.lore.en} Now verify: ${q.q}`);
+      else speakGuide(q.q);
+
+      document.getElementById('btn-speak-question').onclick = () => speakGuide(q.q);
+
+      const mcGrid = document.getElementById('ex-mc-grid');
+      const bWrap = document.getElementById('ex-builder-wrap');
+
+      if (q.type === 'mc') {
+        mcGrid.classList.remove('hidden');
+        bWrap.classList.add('hidden');
+        mcGrid.innerHTML = '';
+        [...q.opts].sort(() => Math.random() - 0.5).forEach(opt => {
+          const b = document.createElement('button');
+          b.className = 'btn-museum bg-[#071120] hover:bg-white/10 border border-white/20 hover:border-[#d4af37] text-white font-semibold text-sm p-3.5 rounded-xl text-left';
+          b.textContent = opt;
+          b.onclick = () => verifyExhibitAnswer(opt);
+          mcGrid.appendChild(b);
+        });
+      } else {
+        mcGrid.classList.add('hidden');
+        bWrap.classList.remove('hidden');
+        builderTokens = [];
+        q._shuffled = q.words.map((w, idx) => ({ w, idx })).sort(() => Math.random() - 0.5);
+        renderBuilderUI(q);
+      }
+    }
+
+    function renderBuilderUI(q) {
+      const tray = document.getElementById('ex-builder-tray');
+      const bank = document.getElementById('ex-builder-bank');
+      tray.innerHTML = ''; bank.innerHTML = '';
+
+      builderTokens.forEach((tok, pos) => {
+        const chip = document.createElement('button');
+        chip.className = 'bg-[#d4af37] text-[#071120] font-museum font-bold text-xs px-3 py-1.5 rounded-lg';
+        chip.textContent = tok.w;
+        chip.onclick = () => { builderTokens.splice(pos, 1); renderBuilderUI(q); };
+        tray.appendChild(chip);
+      });
+
+      q._shuffled.forEach(tok => {
+        const used = builderTokens.some(t => t.idx === tok.idx);
+        const chip = document.createElement('button');
+        chip.disabled = used;
+        chip.className = used
+          ? 'bg-white/5 text-slate-500 text-xs font-bold px-3 py-1.5 rounded-lg'
+          : 'btn-museum bg-[#0f1e36] border border-[#00d2ff]/50 text-white text-xs font-bold px-3 py-1.5 rounded-lg';
+        chip.textContent = tok.w;
+        chip.onclick = () => { builderTokens.push(tok); renderBuilderUI(q); };
+        bank.appendChild(chip);
+      });
+    }
+
+    document.getElementById('btn-builder-reset').onclick = () => {
+      if (!activeSession || !activeSession.question) return;
+      builderTokens = [];
+      renderBuilderUI(activeSession.question);
+    };
+    document.getElementById('btn-builder-verify').onclick = () => {
+      if (!activeSession || !activeSession.question) return;
+      const str = builderTokens.map(t => t.w).join(' ').trim();
+      if (str) verifyExhibitAnswer(str);
+    };
+
+    function verifyExhibitAnswer(given) {
+      if (!activeSession || activeSession.solvedCurrent) return;
+      const q = activeSession.question;
+      const ok = given.trim().toLowerCase() === q.a.trim().toLowerCase();
+
+      if (q.topic === 'vtb') {
+        appState.stats.vtbTotal++;
+        if (ok) appState.stats.vtbCorrect++;
+      } else {
+        appState.stats.psTotal++;
+        if (ok) appState.stats.psCorrect++;
+      }
+
+      const fb = document.getElementById('ex-feedback-box');
+      const fbTxt = document.getElementById('ex-feedback-text');
+      const nextBtn = document.getElementById('btn-ex-continue');
+      fb.classList.remove('hidden');
+
+      if (ok) {
+        activeSession.solvedCurrent = true;
+        playChime('verify');
+        awardCredits(12, 25, 1);
+
+        // Unlock architectural milestones
+        const itemId = activeSession.item.id;
+        if (!appState.verifiedExhibits.includes(itemId)) appState.verifiedExhibits.push(itemId);
+
+        if (itemId === 'docent_atrium' || itemId === 'vit_1930') appState.missions.atriumCheckIn = true;
+        if (itemId === 'docent_rainbow') {
+          appState.missions.rainbowGateOpen = true;
+          if (!appState.unlockedGates.rainbowGate) {
+            appState.unlockedGates.rainbowGate = true;
+            rainbowGateCollider.active = false;
+            playChime('gate');
+            notifyMuseum('🔓 Security Glass Gate Open — Enter the World Cup Trophy Rotunda!', 'emerald');
+          }
+        }
+        if (itemId.startsWith('vit_') && itemId !== 'vit_1930') appState.missions.rotundaLegends = true;
+        if (itemId === 'docent_press' || itemId === 'docent_tactics') appState.missions.mediaMixedZone = true;
+
+        if (activeSession.isShootout) {
+          if (activeSession.stage < activeSession.totalStages) {
+            fb.className = 'mt-3.5 p-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 bg-emerald-950/80 border border-emerald-400/50 text-emerald-200';
+            fbTxt.textContent = `✓ Verified! ${q.exp}`;
+            nextBtn.textContent = 'Next Stage →';
+            nextBtn.onclick = () => { activeSession.stage++; loadSessionQuestion(false); };
+          } else {
+            appState.missions.cinema180Final = true;
+            awardCredits(120, 100, 3);
+            fb.className = 'mt-3.5 p-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 bg-[#d4af37]/25 border border-[#d4af37] text-white';
+            fbTxt.textContent = `🏆 Accreditation Complete! ${q.exp}`;
+            nextBtn.textContent = 'Claim Official Diploma';
+            nextBtn.onclick = () => { closeExhibitModal(); openDiplomaModal(); };
+          }
+        } else {
+          fb.className = 'mt-3.5 p-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 bg-emerald-950/80 border border-emerald-400/50 text-emerald-200';
+          fbTxt.textContent = `✓ Verified (+12 Credits)! ${q.exp}`;
+          nextBtn.textContent = 'Done';
+          nextBtn.onclick = closeExhibitModal;
+        }
+      } else {
+        playChime('retry');
+        appState.stats.missedPrompts.unshift(`[${q.topic === 'vtb' ? 'Verb to Be' : 'Present Simple'}] ${q.q}`);
+        if (appState.stats.missedPrompts.length > 12) appState.stats.missedPrompts.pop();
+
+        fb.className = 'mt-3.5 p-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 bg-amber-950/80 border border-amber-400/50 text-amber-200';
+        fbTxt.textContent = `Curator Hint: ${q.exp}`;
+        nextBtn.textContent = 'Try Again';
+        nextBtn.onclick = () => fb.classList.add('hidden');
+      }
+
+      refreshHUD();
+      saveState();
+      broadcastAcademicPacket();
+    }
+
+    function closeExhibitModal() {
+      modalOpen = false;
+      activeSession = null;
+      document.getElementById('exhibit-modal').classList.add('hidden');
+    }
+    document.getElementById('btn-close-exhibit').onclick = closeExhibitModal;
+
+    function awardCredits(c, xp, st = 0) {
+      appState.credits += c;
+      appState.xp += xp;
+      appState.stars += st;
+      while (appState.xp >= 100) {
+        appState.xp -= 100;
+        appState.level++;
+        notifyMuseum(`★ Promoted to Curator Rank Level ${appState.level}!`);
+      }
+      refreshHUD();
+      saveState();
+    }
+
+    // ============================================================================
+    // 9. HUD, LIVE ARCHITECTURAL FLOORPLAN MINIMAP, ARCHIVE & TEACHER PORTAL
+    // ============================================================================
+    function drawMinimap() {
+      const c = document.getElementById('minimap-canvas');
+      if (!c) return;
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, 220, 118);
+
+      // Map world X (-75..75) -> (10..210), Z (-105..55) -> (8..108)
+      const mx = x => 110 + (x / 75) * 96;
+      const mz = z => 8 + ((z + 105) / 160) * 94;
+
+      ctx.strokeStyle = 'rgba(212,175,55,0.45)';
+      ctx.fillStyle = 'rgba(15,30,54,0.85)';
+      ctx.lineWidth = 1.5;
+
+      // Hall 1 & 2 Spine
+      ctx.fillRect(mx(-32), mz(-18), mx(32) - mx(-32), mz(52) - mz(-18));
+      ctx.strokeRect(mx(-32), mz(-18), mx(32) - mx(-32), mz(52) - mz(-18));
+      // Hall 3, 4, 5 North Complex
+      ctx.fillRect(mx(-72), mz(-104), mx(72) - mx(-72), mz(-20) - mz(-104));
+      ctx.strokeRect(mx(-72), mz(-104), mx(72) - mx(-72), mz(-20) - mz(-104));
+
+      // World Cup Rotunda Circle
+      ctx.beginPath();
+      ctx.arc(mx(0), mz(-52), 9, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffd700';
+      ctx.stroke();
+
+      // Connected Multiplayer Classmate Dots (Emerald Green)
+      remotePeers.forEach(p => {
+        const rx = mx(p.group.position.x);
+        const rz = mz(p.group.position.z);
+        ctx.fillStyle = '#00c853';
+        ctx.beginPath();
+        ctx.arc(rx, rz, 3.6, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Local Player Live Dot (Cyan LED)
+      const px = mx(visitorState.pos.x);
+      const pz = mz(visitorState.pos.z);
+      ctx.fillStyle = '#00e5ff';
+      ctx.beginPath();
+      ctx.arc(px, pz, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function detectCurrentHallName() {
+      const x = visitorState.pos.x, z = visitorState.pos.z;
+      if (z > 19) return ['hall1', 'ATRIUM'];
+      if (z > -18) return ['hall2', 'RAINBOW 211'];
+      if (x > 24) return ['hall4', 'MEDIA ZONE'];
+      if (x < -24) return ['hall5', 'PINBALL / 180°'];
+      return ['hall3', 'TROPHY ROTUNDA'];
+    }
+
+    function refreshHUD() {
+      document.getElementById('hud-visitor-name').textContent = appState.visitorName;
+      document.getElementById('hud-grade-pill').textContent = `GRADE ${appState.grade}`;
+      document.getElementById('hud-credits').textContent = appState.credits;
+      document.getElementById('hud-stars').textContent = appState.stars;
+      document.getElementById('hud-rank-text').textContent = `LVL ${appState.level}`;
+      document.getElementById('hud-xp-fill').style.width = `${Math.min(100, appState.xp)}%`;
+      document.getElementById('hud-kit-dot').style.backgroundColor = appState.kitHex;
+
+      const checklistDef = [
+        { k: 'atriumCheckIn', label: '01 • Atrium Check-In' },
+        { k: 'rainbowGateOpen', label: '02 • Unlock 211 Jerseys Gate' },
+        { k: 'rotundaLegends', label: '03 • Inspect World Cup Vault' },
+        { k: 'mediaMixedZone', label: '04 • Media Zone Routine' },
+        { k: 'pinballCourse', label: '05 • Pinball Target Pads' },
+        { k: 'cinema180Final', label: '06 • Cinema 180° Diploma' }
+      ];
+      const done = checklistDef.filter(i => appState.missions[i.k]).length;
+      document.getElementById('hud-progress-pct').textContent = `${Math.round((done / checklistDef.length) * 100)}%`;
+
+      document.getElementById('hud-checklist').innerHTML = checklistDef.map(c =>
+        `<li class="flex items-center justify-between ${appState.missions[c.k] ? 'text-emerald-400' : 'text-slate-400'}">
+          <span>${c.label}</span><span>${appState.missions[c.k] ? '✓' : '○'}</span>
+        </li>`
+      ).join('');
+    }
+
+    // Archive Drawer
+    function openArchive(cat = 'legends') {
+      document.getElementById('archive-modal').classList.remove('hidden');
+      document.querySelectorAll('.arch-tab').forEach(b => {
+        const active = b.getAttribute('data-cat') === cat;
+        b.className = active
+          ? 'arch-tab bg-[#d4af37] text-[#071120] font-museum font-bold text-xs px-4 py-2 rounded-full'
+          : 'arch-tab bg-white/10 text-white font-museum font-bold text-xs px-4 py-2 rounded-full';
+      });
+
+      const grid = document.getElementById('archive-grid');
+      grid.innerHTML = '';
+      (ARCHIVE_DATA[cat] || []).forEach(entry => {
+        const collected = appState.readArchiveIds.includes(entry.id);
+        const card = document.createElement('div');
+        card.className = 'bg-[#071120]/90 border border-white/15 rounded-2xl p-4 flex flex-col justify-between gap-3';
+        card.innerHTML = `
+          <div>
+            <span class="text-[10px] font-museum font-bold uppercase tracking-wider text-[#d4af37]">${entry.hall}</span>
+            <h3 class="font-museum font-bold text-base text-white mt-0.5 mb-2">${entry.title}</h3>
+            <p class="text-xs text-slate-300 leading-relaxed mb-2.5">${entry.es}</p>
+            <div class="bg-emerald-950/40 border-l-2 border-[#00a859] px-3 py-1.5 text-xs text-emerald-200 font-medium">
+              🇬🇧 "${entry.en}"
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <button class="btn-museum ${collected ? 'bg-white/10 text-slate-300' : 'bg-[#d4af37] text-[#071120]'} font-museum font-bold text-xs px-3.5 py-2 rounded-xl">
+              ${collected ? '🔊 Replay Audio Guide (✓)' : '🔊 Audio Guide (+5 🪙)'}
+            </button>
+          </div>
+        `;
+        card.querySelector('button').onclick = () => {
+          speakGuide(entry.en);
+          if (!appState.readArchiveIds.includes(entry.id)) {
+            appState.readArchiveIds.push(entry.id);
+            playChime('credit');
+            awardCredits(5, 10, 0);
+            openArchive(cat);
+          }
+        };
+        grid.appendChild(card);
+      });
+    }
+
+    // Kit Customizer
+    function openKitModal() {
+      document.getElementById('kit-modal').classList.remove('hidden');
+      document.getElementById('kit-credits-label').textContent = appState.credits;
+
+      const kw = document.getElementById('kit-swatches');
+      kw.innerHTML = '';
+      KIT_PALETTES.forEach(k => {
+        const b = document.createElement('button');
+        b.className = `w-10 h-10 rounded-xl border-2 ${appState.kitHex === k.hex ? 'border-[#d4af37] scale-110' : 'border-white/25'}`;
+        b.style.backgroundColor = k.hex;
+        b.title = k.name;
+        b.onclick = () => {
+          appState.kitHex = k.hex; appState.shortsHex = k.shorts;
+          buildVisitorAvatar(); refreshHUD(); saveState(); broadcastStatePacket(false); openKitModal();
+        };
+        kw.appendChild(b);
+      });
+
+      const sw = document.getElementById('skin-swatches');
+      sw.innerHTML = '';
+      SKIN_PALETTES.forEach(hex => {
+        const b = document.createElement('button');
+        b.className = `w-9 h-9 rounded-full border-2 ${appState.skinHex === hex ? 'border-[#d4af37] scale-110' : 'border-white/25'}`;
+        b.style.backgroundColor = hex;
+        b.onclick = () => { appState.skinHex = hex; buildVisitorAvatar(); saveState(); broadcastStatePacket(false); openKitModal(); };
+        sw.appendChild(b);
+      });
+
+      const hg = document.getElementById('headgear-grid');
+      hg.innerHTML = '';
+      GEAR_SHOP.forEach(g => {
+        const owned = appState.ownedHats.includes(g.id);
+        const active = appState.hatId === g.id;
+        const btn = document.createElement('button');
+        btn.className = `p-3 rounded-xl border text-left text-xs ${active ? 'border-[#d4af37] bg-[#d4af37]/20 text-white' : 'border-white/15 bg-white/5 text-slate-200'}`;
+        btn.innerHTML = `<div class="font-museum font-bold">${g.name}</div><div class="text-[11px] text-[#d4af37] mt-1">${owned ? (active ? 'Equipped ✓' : 'Equip') : `🪙 ${g.cost} Credits`}</div>`;
+        btn.onclick = () => {
+          if (owned) { appState.hatId = g.id; }
+          else if (appState.credits >= g.cost) {
+            appState.credits -= g.cost;
+            appState.ownedHats.push(g.id);
+            appState.hatId = g.id;
+            playChime('verify');
+          } else {
+            notifyMuseum('Earn more Museum Credits by inspecting exhibits!');
+            return;
+          }
+          buildVisitorAvatar(); refreshHUD(); saveState(); broadcastStatePacket(false); openKitModal();
+        };
+        hg.appendChild(btn);
+      });
+    }
+
+    // Teacher Password Gate & Analytics Dashboard
+    function requestTeacherAccess() {
+      if (teacherSessionUnlocked) {
+        openTeacherModal();
+      } else {
+        const authModal = document.getElementById('teacher-auth-modal');
+        const passInput = document.getElementById('teacher-pass-input');
+        const errBox = document.getElementById('teacher-auth-error');
+        errBox.classList.add('hidden');
+        passInput.value = '';
+        passInput.type = 'password';
+        authModal.classList.remove('hidden');
+        setTimeout(() => passInput.focus(), 60);
+      }
+    }
+
+    function closeTeacherAuthModal() {
+      document.getElementById('teacher-auth-modal').classList.add('hidden');
+    }
+
+    function verifyTeacherPasswordInput() {
+      const passInput = document.getElementById('teacher-pass-input');
+      const errBox = document.getElementById('teacher-auth-error');
+      const entered = passInput.value.trim();
+
+      if (computeAccessDigest(entered) === getActiveTeacherDigest()) {
+        teacherSessionUnlocked = true;
+        errBox.classList.add('hidden');
+        passInput.value = '';
+        closeTeacherAuthModal();
+        playChime('verify');
+        openTeacherModal();
+        notifyMuseum('🔓 Modo Teacher desbloqueado', 'emerald');
+      } else {
+        playChime('retry');
+        errBox.classList.remove('hidden');
+        passInput.select();
+      }
+    }
+
+    function openTeacherModal() {
+      if (!teacherSessionUnlocked) {
+        requestTeacherAccess();
+        return;
+      }
+      saveState();
+      document.getElementById('teacher-pass-drawer').classList.add('hidden');
+      document.getElementById('teacher-modal').classList.remove('hidden');
+      renderTeacherRows();
+    }
+
+    function renderTeacherRows() {
+      const f = document.getElementById('teacher-filter-grade').value;
+      const rows = appState.roster.filter(r => f === 'all' || String(r.grade) === f);
+      const tbody = document.getElementById('teacher-table-body');
+      tbody.innerHTML = '';
+
+      rows.forEach(r => {
+        const vtbPct = r.vtbTotal ? Math.round((r.vtbCorrect / r.vtbTotal) * 100) : 0;
+        const psPct = r.psTotal ? Math.round((r.psCorrect / r.psTotal) * 100) : 0;
+        const tot = r.vtbTotal + r.psTotal;
+        const acc = tot ? ((r.vtbCorrect + r.psCorrect) / tot) * 75 : 0;
+        const score100 = Math.min(100, Math.round(acc + (r.exhibitsDone / 6) * 25));
+        const scale7 = (1 + (score100 / 100) * 6).toFixed(1);
+        const mins = Math.floor((r.seconds || 0) / 60);
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="p-3 font-bold text-white">${r.name}</td>
+          <td class="p-3">Grade ${r.grade}</td>
+          <td class="p-3 text-cyan-300">${vtbPct}% (${r.vtbCorrect}/${r.vtbTotal})</td>
+          <td class="p-3 text-emerald-300">${psPct}% (${r.psCorrect}/${r.psTotal})</td>
+          <td class="p-3">${r.exhibitsDone} / 6</td>
+          <td class="p-3">${mins}m ${(r.seconds || 0) % 60}s</td>
+          <td class="p-3 font-bold">${score100} / 100</td>
+          <td class="p-3 font-museum font-extrabold text-[#d4af37]">${scale7} / 7.0</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      const missed = appState.stats.missedPrompts;
+      document.getElementById('teacher-missed-box').innerHTML = missed.length
+        ? `<b class="text-[#d4af37]">Recent Diagnostic Prompts for Review:</b><br/>${missed.slice(0, 5).join(' • ')}`
+        : `<b class="text-emerald-400">Clean Diagnostic Log:</b> Zero errors recorded in the current session.`;
+    }
+
+    function openDiplomaModal() {
+      document.getElementById('dip-name').textContent = appState.visitorName.toUpperCase();
+      document.getElementById('dip-summary').textContent =
+        `Accredited in Grade ${appState.grade} English Grammar (Verb to Be & Present Simple) across all 5 Zurich Galleries • Credits: ${appState.credits} • Stars: ${appState.stars}.`;
+      document.getElementById('diploma-modal').classList.remove('hidden');
+      playChime('verify');
+    }
+
+    // ============================================================================
+    // 10. CONTROLS, SMOOTH WALL COLLISIONS & MAIN 3D RENDER LOOP
+    // ============================================================================
+    const keyMap = {};
+    const joyState = { x: 0, y: 0, active: false };
+
+    function isTypingInField() {
+      const tag = document.activeElement && document.activeElement.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+
+    function setupInputs() {
+      window.addEventListener('keydown', e => {
+        if (isTypingInField()) return;
+        keyMap[e.code] = true;
+        if (e.code === 'Space' && activePlayable && !modalOpen && visitorState.onGround) {
+          visitorState.velY = 9.5;
+          visitorState.onGround = false;
+        }
+        if (e.code === 'KeyE' && activePlayable && !modalOpen && closestExhibit) {
+          openExhibitInspection(closestExhibit);
+        }
+        if (e.code === 'Escape' && modalOpen) closeExhibitModal();
+      });
+      window.addEventListener('keyup', e => { keyMap[e.code] = false; });
+
+      const c = document.getElementById('game-canvas');
+      c.addEventListener('pointerdown', e => {
+        initAudio();
+        camOrbit.dragging = true; camOrbit.lx = e.clientX; camOrbit.ly = e.clientY;
+      });
+      window.addEventListener('pointerup', () => { camOrbit.dragging = false; });
+      window.addEventListener('pointermove', e => {
+        if (!camOrbit.dragging) return;
+        camOrbit.yaw -= (e.clientX - camOrbit.lx) * 0.0055;
+        camOrbit.pitch = Math.max(0.1, Math.min(0.95, camOrbit.pitch + (e.clientY - camOrbit.ly) * 0.004));
+        camOrbit.lx = e.clientX; camOrbit.ly = e.clientY;
+      });
+
+      // Mobile Virtual Thumbstick
+      const jZone = document.getElementById('joy-zone');
+      const jKnob = document.getElementById('joy-knob');
+      jZone.addEventListener('pointerdown', e => { e.stopPropagation(); joyState.active = true; moveJoy(e); });
+      window.addEventListener('pointermove', e => { if (joyState.active) moveJoy(e); });
+      window.addEventListener('pointerup', () => {
+        joyState.active = false; joyState.x = 0; joyState.y = 0;
+        jKnob.style.transform = 'translate(0px,0px)';
+      });
+      function moveJoy(e) {
+        const r = jZone.getBoundingClientRect();
+        let dx = e.clientX - (r.left + r.width / 2);
+        let dy = e.clientY - (r.top + r.height / 2);
+        const max = 36, len = Math.hypot(dx, dy);
+        if (len > max) { dx = (dx / len) * max; dy = (dy / len) * max; }
+        jKnob.style.transform = `translate(${dx}px,${dy}px)`;
+        joyState.x = dx / max; joyState.y = dy / max;
+      }
+
+      document.getElementById('btn-mob-jump').onclick = () => {
+        if (visitorState.onGround) { visitorState.velY = 9.5; visitorState.onGround = false; }
+      };
+      document.getElementById('btn-mob-inspect').onclick = () => {
+        if (closestExhibit) openExhibitInspection(closestExhibit);
+      };
+      document.getElementById('btn-proximity-trigger').onclick = () => {
+        if (closestExhibit) openExhibitInspection(closestExhibit);
+      };
+    }
+
+    function blockedByMuseumWall(nx, nz) {
+      for (const w of solidWalls) {
+        if (!w.active) continue;
+        if (nx > w.minX && nx < w.maxX && nz > w.minZ && nz < w.maxZ && visitorState.pos.y < w.topY - 0.3) return true;
+      }
+      return false;
+    }
+
+    function stepSimulation(dt) {
+      // Smoothly slide Rainbow Security Glass Gate open once unlocked
+      if (rainbowSecurityGateMesh && appState.unlockedGates.rainbowGate && rainbowSecurityGateMesh.position.y < 10.2) {
+        rainbowSecurityGateMesh.position.y += dt * 4.5;
+      }
+
+      rotatingExhibits.forEach(g => { g.rotation.y += dt * 0.75; });
+
+      creditTokens.forEach(tok => {
+        if (tok.taken) return;
+        tok.mesh.rotation.z += dt * 2.2;
+        if (activePlayable && Math.hypot(visitorState.pos.x - tok.mesh.position.x, visitorState.pos.z - tok.mesh.position.z) < 1.6) {
+          tok.taken = true;
+          tok.mesh.visible = false;
+          playChime('credit');
+          awardCredits(5, 8, 0);
+          notifyMuseum('+5 FIFA Museum Commemorative Credits');
+        }
+      });
+
+      let ix = 0, iz = 0;
+      if (activePlayable && !modalOpen && !isTypingInField()) {
+        if (keyMap['KeyW'] || keyMap['ArrowUp']) iz -= 1;
+        if (keyMap['KeyS'] || keyMap['ArrowDown']) iz += 1;
+        if (keyMap['KeyA'] || keyMap['ArrowLeft']) ix -= 1;
+        if (keyMap['KeyD'] || keyMap['ArrowRight']) ix += 1;
+        if (joyState.active) { ix += joyState.x; iz += joyState.y; }
+      }
+
+      const mag = Math.hypot(ix, iz);
+      visitorState.isMovingNow = mag > 0.05;
+      if (mag > 0.05) {
+        const nx = ix / Math.max(1, mag), nz = iz / Math.max(1, mag);
+        const s = Math.sin(camOrbit.yaw), c = Math.cos(camOrbit.yaw);
+        const wx = nx * c + nz * s;
+        const wz = -nx * s + nz * c;
+        const speed = 11.8 * dt;
+
+        const candX = visitorState.pos.x + wx * speed;
+        const candZ = visitorState.pos.z + wz * speed;
+        if (!blockedByMuseumWall(candX, visitorState.pos.z)) visitorState.pos.x = candX;
+        if (!blockedByMuseumWall(visitorState.pos.x, candZ)) visitorState.pos.z = candZ;
+
+        visitorState.yaw = Math.atan2(wx, wz);
+        visitorState.walkCycle += dt * 11;
+      }
+
+      // Gravity & Pinball Target Pad Detection
+      visitorState.velY -= 24 * dt;
+      visitorState.pos.y += visitorState.velY * dt;
+
+      let floorY = 0, steppedPad = null;
+      for (const p of stepPlatforms) {
+        if (visitorState.pos.x >= p.minX && visitorState.pos.x <= p.maxX &&
+            visitorState.pos.z >= p.minZ && visitorState.pos.z <= p.maxZ) {
+          if (visitorState.pos.y >= p.topY - 0.45 && p.topY >= floorY) {
+            floorY = p.topY;
+            steppedPad = p;
+          }
+        }
+      }
+
+      if (visitorState.pos.y <= floorY) {
+        visitorState.pos.y = floorY;
+        visitorState.velY = 0;
+        visitorState.onGround = true;
+
+        if (steppedPad && steppedPad.pinballMeta) {
+          const pm = steppedPad.pinballMeta;
+          if (pm.isCorrect) {
+            pm.mesh.material.color.setHex(0x00c853);
+            pm.mesh.material.emissive.setHex(0x00c853);
+            if (!pm.solved) {
+              pm.solved = true;
+              playChime('verify');
+              awardCredits(10, 15, 0);
+              if (pm.rowIndex === 2) {
+                appState.missions.pinballCourse = true;
+                broadcastAcademicPacket();
+                notifyMuseum('✓ Pinball Skill Arena Verified! Head to Hall 05 Cinema 180°!', 'emerald');
+              } else {
+                notifyMuseum('✓ Accurate Pinball Target Pad! (+10 Credits)', 'emerald');
+              }
+            }
+          } else {
+            pm.mesh.material.color.setHex(0x991b1b);
+            playChime('retry');
+            notifyMuseum('Pinball Lane Reset — Check the grammar prompt above the lane!');
+            visitorState.pos.set(-48, 0.5, -26);
+          }
+        }
+      }
+
+      visitorGroup.position.copy(visitorState.pos);
+      visitorGroup.rotation.y = visitorState.yaw;
+
+      if (mag > 0.05 && visitorState.onGround) {
+        const sw = Math.sin(visitorState.walkCycle) * 0.62;
+        visitorLimbs.legL.rotation.x = -sw;
+        visitorLimbs.legR.rotation.x = sw;
+        visitorLimbs.armL.rotation.x = sw;
+        visitorLimbs.armR.rotation.x = -sw;
+      } else {
+        visitorLimbs.legL.rotation.x = 0; visitorLimbs.legR.rotation.x = 0;
+        visitorLimbs.armL.rotation.x = 0; visitorLimbs.armR.rotation.x = 0;
+      }
+
+      // Smoothly Interpolate & Animate All Connected Remote Classmates in 3D
+      remotePeers.forEach(peer => {
+        peer.group.position.lerp(peer.targetPos, Math.min(1, dt * 10));
+        peer.group.rotation.y = peer.targetYaw;
+        const distMove = peer.group.position.distanceTo(peer.targetPos);
+        if (peer.moving || distMove > 0.06) {
+          peer.walkPhase += dt * 11;
+          const psw = Math.sin(peer.walkPhase) * 0.6;
+          peer.limbs.legL.rotation.x = -psw;
+          peer.limbs.legR.rotation.x = psw;
+          peer.limbs.armL.rotation.x = psw;
+          peer.limbs.armR.rotation.x = -psw;
+        } else {
+          peer.limbs.legL.rotation.x = 0; peer.limbs.legR.rotation.x = 0;
+          peer.limbs.armL.rotation.x = 0; peer.limbs.armR.rotation.x = 0;
+        }
+      });
+
+      // Smooth Indoor Architectural Camera (Clamped below ceiling beams)
+      const target = new THREE.Vector3(visitorState.pos.x, visitorState.pos.y + 2.35, visitorState.pos.z);
+      const hd = Math.cos(camOrbit.pitch) * camOrbit.dist;
+      const vd = Math.sin(camOrbit.pitch) * camOrbit.dist;
+      const desiredCam = new THREE.Vector3(
+        target.x + Math.sin(camOrbit.yaw) * hd,
+        Math.min(10.6, Math.max(1.6, target.y + vd)),
+        target.z + Math.cos(camOrbit.yaw) * hd
+      );
+      camera.position.lerp(desiredCam, Math.min(1, dt * 10));
+      camera.lookAt(target);
+
+      // Update Proximity Banner
+      closestExhibit = null;
+      let minD = Infinity;
+      for (const ex of museumInteractables) {
+        const d = Math.hypot(visitorState.pos.x - ex.x, visitorState.pos.z - ex.z);
+        if (d < ex.radius && d < minD) { minD = d; closestExhibit = ex; }
+      }
+      const banner = document.getElementById('proximity-banner');
+      if (activePlayable && !modalOpen && closestExhibit) {
+        document.getElementById('proximity-label').textContent = closestExhibit.prompt;
+        banner.classList.remove('hidden');
+      } else {
+        banner.classList.add('hidden');
+      }
+
+      // Live Minimap & Hall Tag
+      const [hallKey, hallShort] = detectCurrentHallName();
+      const tagEl = document.getElementById('hud-live-hall-tag');
+      if (tagEl) tagEl.textContent = hallShort;
+      if (document.activeElement !== document.getElementById('hall-selector')) {
+        document.getElementById('hall-selector').value = hallKey;
+      }
+      drawMinimap();
+    }
+
+    // ============================================================================
+    // 11. BOOTSTRAP & UI WIRING
+    // ============================================================================
+    function initUIWiring() {
+      let chosenGrade = appState.grade || 1;
+      const gCards = document.querySelectorAll('.grade-option');
+      const highlightGrade = (g) => {
+        chosenGrade = g;
+        gCards.forEach(c => {
+          const match = Number(c.getAttribute('data-grade')) === g;
+          c.className = match
+            ? 'grade-option text-left p-3.5 rounded-2xl border-2 border-[#d4af37] bg-[#d4af37]/15 transition'
+            : 'grade-option text-left p-3.5 rounded-2xl border border-white/15 bg-white/5 hover:bg-white/10 transition';
+        });
+      };
+      highlightGrade(chosenGrade);
+      gCards.forEach(c => { c.onclick = () => highlightGrade(Number(c.getAttribute('data-grade'))); });
+
+      document.getElementById('visitor-name-input').value = appState.visitorName;
+      document.getElementById('room-code-input').value = appState.roomCode;
+
+      document.getElementById('btn-enter-museum').onclick = () => {
+        initAudio();
+        const nameVal = document.getElementById('visitor-name-input').value.trim() || 'Junior Curator';
+        const roomVal = sanitizeRoomCode(document.getElementById('room-code-input').value);
+        appState.visitorName = nameVal;
+        appState.roomCode = roomVal;
+        appState.grade = chosenGrade;
+        buildVisitorAvatar();
+        buildPinballTargetPads();
+        refreshHUD();
+        saveState();
+        connectMultiplayerRoom(roomVal);
+        document.getElementById('welcome-modal').classList.add('hidden');
+        document.getElementById('museum-hud').classList.remove('hidden');
+        activePlayable = true;
+        playChime('verify');
+        broadcastStatePacket(true);
+        broadcastAcademicPacket();
+        notifyMuseum(`Joined Room [${appState.roomCode}] as ${appState.visitorName}!`);
+      };
+
+      document.getElementById('btn-change-room').onclick = () => {
+        activePlayable = false;
+        document.getElementById('room-code-input').value = appState.roomCode;
+        document.getElementById('welcome-modal').classList.remove('hidden');
+      };
+
+      document.querySelectorAll('.qchat-btn').forEach(btn => {
+        btn.onclick = () => {
+          const phrase = btn.getAttribute('data-qchat');
+          if (phrase) broadcastQuickChat(phrase);
+        };
+      });
+
+      document.getElementById('btn-open-lobby').onclick = () => {
+        activePlayable = false;
+        document.getElementById('welcome-modal').classList.remove('hidden');
+      };
+
+      document.getElementById('hall-selector').onchange = e => {
+        const dest = HALL_COORDS[e.target.value];
+        if (dest) {
+          if ((e.target.value === 'hall3' || e.target.value === 'hall4' || e.target.value === 'hall5') && !appState.unlockedGates.rainbowGate) {
+            appState.unlockedGates.rainbowGate = true;
+            if (rainbowGateCollider) rainbowGateCollider.active = false;
+          }
+          visitorState.pos.set(dest.x, 0, dest.z);
+          visitorState.yaw = dest.yaw;
+          playChime('gate');
+          notifyMuseum(`Transferred to ${dest.tag}`);
+        }
+        e.target.blur();
+      };
+
+      document.getElementById('btn-open-archive').onclick = () => openArchive('legends');
+      document.getElementById('welcome-btn-archive').onclick = () => openArchive('legends');
+      document.querySelectorAll('.arch-tab').forEach(b => { b.onclick = () => openArchive(b.getAttribute('data-cat')); });
+
+      document.getElementById('btn-open-kit').onclick = openKitModal;
+      document.getElementById('btn-open-teacher').onclick = requestTeacherAccess;
+      document.getElementById('welcome-btn-teacher').onclick = requestTeacherAccess;
+      document.getElementById('teacher-filter-grade').onchange = renderTeacherRows;
+
+      // Teacher Password Gate Controls
+      document.getElementById('btn-submit-teacher-auth').onclick = verifyTeacherPasswordInput;
+      document.getElementById('btn-close-teacher-auth').onclick = closeTeacherAuthModal;
+      document.getElementById('btn-cancel-teacher-auth').onclick = closeTeacherAuthModal;
+      document.getElementById('teacher-pass-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') verifyTeacherPasswordInput();
+        if (e.key === 'Escape') closeTeacherAuthModal();
+      });
+      document.getElementById('btn-toggle-pass-vis').onclick = () => {
+        const inp = document.getElementById('teacher-pass-input');
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+      };
+
+      // Lock Session & Custom Password Controls inside Teacher Portal
+      document.getElementById('btn-lock-teacher').onclick = () => {
+        teacherSessionUnlocked = false;
+        document.getElementById('teacher-modal').classList.add('hidden');
+        notifyMuseum('🔒 Modo Teacher bloqueado.');
+      };
+      document.getElementById('btn-open-pass-settings').onclick = () => {
+        document.getElementById('teacher-pass-drawer').classList.toggle('hidden');
+      };
+      document.getElementById('btn-close-pass-drawer').onclick = () => {
+        document.getElementById('teacher-pass-drawer').classList.add('hidden');
+      };
+      document.getElementById('btn-save-new-pass').onclick = () => {
+        const rawNew = document.getElementById('teacher-new-pass-input').value.trim();
+        if (rawNew.length < 4) {
+          notifyMuseum('La nueva clave debe tener al menos 4 caracteres.');
+          return;
+        }
+        try {
+          localStorage.setItem(TEACHER_HASH_KEY, computeAccessDigest(rawNew));
+          document.getElementById('teacher-new-pass-input').value = '';
+          document.getElementById('teacher-pass-drawer').classList.add('hidden');
+          playChime('verify');
+          notifyMuseum('🔑 Nueva contraseña docente guardada.', 'emerald');
+        } catch (e) {}
+      };
+      document.getElementById('btn-reset-default-pass').onclick = () => {
+        try { localStorage.removeItem(TEACHER_HASH_KEY); } catch (e) {}
+        document.getElementById('teacher-new-pass-input').value = '';
+        document.getElementById('teacher-pass-drawer').classList.add('hidden');
+        notifyMuseum('Clave restaurada a PROFE2026.');
+      };
+
+      document.getElementById('btn-toggle-audio').onclick = () => {
+        appState.audioOn = !appState.audioOn;
+        document.getElementById('btn-toggle-audio').textContent = appState.audioOn ? '🔊' : '🔇';
+        if (!appState.audioOn && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+        saveState();
+      };
+
+      document.getElementById('btn-export-csv').onclick = () => {
+        let csv = 'Visitor,Grade,VerbToBe_Correct,VerbToBe_Total,PresentSimple_Correct,PresentSimple_Total,Exhibits_Completed,Score_0_100,Grade_1_to_7\n';
+        appState.roster.forEach(r => {
+          const tot = r.vtbTotal + r.psTotal;
+          const acc = tot ? ((r.vtbCorrect + r.psCorrect) / tot) * 75 : 0;
+          const s100 = Math.min(100, Math.round(acc + (r.exhibitsDone / 6) * 25));
+          const s7 = (1 + (s100 / 100) * 6).toFixed(1);
+          csv += `"${r.name}",${r.grade},${r.vtbCorrect},${r.vtbTotal},${r.psCorrect},${r.psTotal},${r.exhibitsDone},${s100},${s7}\n`;
+        });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'fifa_museum_zurich_grades.csv';
+        a.click();
+      };
+
+      document.getElementById('btn-clear-storage').onclick = () => {
+        localStorage.removeItem(SAVE_KEY);
+        appState = DEFAULT_STATE();
+        renderTeacherRows();
+        refreshHUD();
+        notifyMuseum('Local student roster cleared.');
+      };
+
+      document.querySelectorAll('[data-close-modal]').forEach(btn => {
+        btn.onclick = () => document.getElementById(btn.getAttribute('data-close-modal')).classList.add('hidden');
+      });
+
+      setInterval(() => {
+        if (activePlayable && !document.hidden) {
+          appState.stats.seconds++;
+          if (appState.stats.seconds % 10 === 0) broadcastAcademicPacket();
+        }
+      }, 1000);
+
+      // Broadcast 3D Avatar Position & Limb State ~6 times/sec + Prune stale peers
+      setInterval(() => {
+        if (activePlayable) broadcastStatePacket(false);
+        pruneInactivePeers();
+      }, 170);
+    }
+
+    window.onload = function () {
+      const canvas = document.getElementById('game-canvas');
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 220);
+      clock = new THREE.Clock();
+
+      buildEntireZurichMuseum();
+      buildVisitorAvatar();
+      setupInputs();
+      initUIWiring();
+      connectMultiplayerRoom(appState.roomCode);
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      function animateLoop() {
+        requestAnimationFrame(animateLoop);
+        const dt = Math.min(0.05, clock.getDelta());
+        stepSimulation(dt);
+        renderer.render(scene, camera);
+      }
+      animateLoop();
+    };
+  </script>
+</body>
+</html>
